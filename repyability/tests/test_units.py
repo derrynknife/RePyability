@@ -613,3 +613,34 @@ def test_fault_trees_networks_and_missions_read_the_units():
     phase = NonRepairableRBD(ONE, {"a": W([100, 2], unit="cycles")})
     mission = PhasedMission([("one", 1.0, phase), ("two", 2.0, phase)])
     assert mission.unit == "cycles" and "unit 'cycles'" in repr(mission)
+
+
+@pytest.mark.parametrize("c", [1e-6, 1e-3, 1e3, 1e6])
+def test_a_mission_s_measures_scale_with_the_unit(c):
+    # A mission with every time multiplied by c: the same shares, its
+    # expected running time c times as long, a duration's sensitivity
+    # 1/c as large.
+    def mission(c):
+        units = {"a": W([100 * c, 2]), "b": E([0.01 / c])}
+        series = NonRepairableRBD(SERIES, units)
+        pair = NonRepairableRBD(
+            [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")], units
+        )
+        return PhasedMission([("one", 5.0 * c, series), ("two", 20 * c, pair)])
+
+    base, scaled = mission(1.0), mission(c)
+    assert scaled.barlow_proschan_importance() == pytest.approx(
+        base.barlow_proschan_importance(), rel=1e-7
+    )
+    assert scaled.differential_importance() == pytest.approx(
+        base.differential_importance(), rel=1e-9
+    )
+    assert scaled.expected_mission_time() / c == pytest.approx(
+        base.expected_mission_time(), rel=1e-8
+    )
+    duration = (None, "phase.two.duration")
+    assert scaled.parameter_sensitivity()[duration[0]][
+        duration[1]
+    ] * c == pytest.approx(
+        base.parameter_sensitivity()[duration[0]][duration[1]], rel=1e-6
+    )

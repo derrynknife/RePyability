@@ -591,11 +591,27 @@ standby and load sharing, see [Redundancy models](redundancy-models.md).
 document, the XML that PRA tools read: the OR, AND, VOTE (`atleast`) and
 NOT gates, an FDEP gate as its static equivalent, events given as
 probabilities, exponential and Weibull lives as expressions of the mission
-time, and common-cause groups of the beta-factor model splitting a
-probability. A name that is not an MEF identifier is made one, the name as
-given kept as its label. `to_open_psa(t)` writes every event's probability
-at `t` instead, for models the format has no expression for. The format
-has no dynamic gates, so a tree with PAND, SPARE or SEQ gates is refused:
+time, and common-cause groups splitting a probability: a `BetaFactor` as
+the format's beta-factor model (its factor at the level of the whole
+group), an `MGL` as its MGL model, and an `AlphaFactor` as its
+alpha-factor model (whose formula is the non-staggered scheme's: staggered
+alpha factors are written as the non-staggered ones of the same
+probabilities). The format takes each set's probability as an
+independent basic event, so an `MGL` or `AlphaFactor` of three or more
+members is written with `shocks="independent"` and refused otherwise; a
+group splitting the failure rate (`basis="rate"`) has no form in the
+format and is refused. [Repaired and tested events](#repaired-and-tested-events)
+are written as the format's `GLM` (an exponential life and repair) and
+`periodic-test` (an exponential life found by tests every `interval`, the
+first at its `offset` or else at the interval: 4 arguments for an instant
+repair, 5 for an exponential one, and 11 for a test that takes a fixed
+time, off line, finding every failure); other lives, repairs and test
+options are refused, naming the event. A name that is not an MEF
+identifier is made one, the name as given kept as its label.
+`to_open_psa(t)` writes every event's probability at `t` instead (a
+repaired event's unavailability), for models the format has no
+expression for. The format has no dynamic gates, so a tree with PAND,
+SPARE or SEQ gates is refused:
 
 ```python
 print(cooling.to_open_psa().splitlines()[3])
@@ -612,25 +628,43 @@ in a gate becomes a gate of its own, named after it (`"G1/1"`, ...). A
 basic event's `exponential` or `Weibull` of the mission time becomes the
 surpyval life, so the tree keeps its time dependence; any other expression
 (a `float`, a `parameter`, arithmetic) is its value, at `mission_time=` if
-it reads the mission time. House events are probabilities 0 and 1, and a
-`beta-factor` group is a `BetaFactor` `CCFGroup`. A name the writer had to
+it reads the mission time. House events are probabilities 0 and 1. A
+`beta-factor` group is a `BetaFactor` `CCFGroup`, an `MGL` group an `MGL`
+and an `alpha-factor` group a non-staggered `AlphaFactor`, each of three or
+more members with `shocks="independent"`, as the format means them. A
+`phi-factor` group, whose factors are each specific set's share of `Q`,
+is the staggered `AlphaFactor` of the same shares where a member's sets
+add up to `Q`, as every model here has them, and refused, saying so,
+where they do not. A `GLM` or
+`periodic-test` of the mission time is a repaired or tested event's
+component spec, where it is one: a `GLM` with no failure on demand
+(`gamma` 0), and a `periodic-test` whose first test falls within its first
+interval and, in its 11-argument form, whose test ages nothing, causes no
+failure, takes the unit off line, finds every failure and restarts it
+well. Each of the others is refused, naming what it has. Its value at a
+test is the one just after the test. A name the writer had to
 make an identifier comes back from its label, so a tree written and read
 again is the tree it was:
 
 ```python
 again = FaultTree.from_open_psa(cooling.to_open_psa())
 again.gates == cooling.gates                       # True
-FaultTree.from_open_psa("model.xml", tree="FT-1", mission_time=8760.0)
+
+import tempfile
+from pathlib import Path
+
+path = Path(tempfile.mkdtemp()) / "model.xml"
+path.write_text(cooling.to_open_psa(name="FT-1"))
+from_file = FaultTree.from_open_psa(path, tree="FT-1", mission_time=8760.0)
+from_file.gates == cooling.gates                   # True
 ```
 
 A document with several fault trees needs `tree=`, and one with several
 gates that are no gate's input `top=`. A document that declares a document
 type or an entity is refused before it is parsed (an entity can expand
 without bound or read a file). What the reader does not take is refused by
-its element name, saying what to do: `GLM` and `periodic-test` (repaired
-and tested events; give the events component specs instead), the MGL,
-alpha-factor and phi-factor common-cause models (build the group with
-`MGL` or `AlphaFactor`), the `iff`, `imply` and `cardinality` formulas,
+its element name, saying what to do: a `GLM` or `periodic-test` inside
+another expression, the `iff`, `imply` and `cardinality` formulas,
 uncertainty deviates, and event trees.
 
 ## The model and its limits

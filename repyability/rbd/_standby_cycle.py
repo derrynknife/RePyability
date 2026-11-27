@@ -1,7 +1,8 @@
 """The long-run values of a cold standby pair with general lives and
 repairs (#629, step 1): ``units=2``, ``k=1``, a spare that does not age
 (``dormancy_factor`` 0) and switches in surely, and one repair at a time
-(``repair_crews`` 1 among the pair's units).
+(``repair_crews`` 1 among the pair's units; both repaired at once is
+``_standby_both``).
 
 **The cycle.** The pair regenerates each time a unit fails while the
 other is ready: the ready one is switched in, as new (a cold spare does
@@ -43,26 +44,21 @@ RTOL = 1e-10
 _CUTS = (0.01, 0.1, 0.5, 0.9, 0.99, 0.9999, 1 - 1e-8, 1 - 1e-12)
 
 
-def why_not(arrangement, crews: Optional[int]) -> Optional[str]:
-    """Why a standby group's long-run values are not worked out by its
-    cycle (see the module's notes), or None. ``crews`` is how many of its
-    units can be repaired at once (None: all)."""
+def why_not(arrangement) -> Optional[str]:
+    """Why a standby group's long-run values are worked out neither by
+    its cycle (see the module's notes) nor, with both units repaired at
+    once, by ``_standby_both``; or None."""
     if arrangement.rates is not None:
         return "it is not a standby group (its units operate together)"
     if arrangement.units != 2 or arrangement.k != 1:
         return (
             f"it has {arrangement.units} units, {arrangement.k} needed, and "
-            "the cycle is worked out for a pair, one needed, alone"
+            "they are worked out for a pair, one needed, alone"
         )
     if arrangement.dormancy_factor != 0.0:
         return "its spare ages while it waits (a warm spare)"
     if arrangement.switching_probability != 1.0:
         return "switching onto its spare may fail"
-    if crews != 1:
-        return (
-            "both units can be repaired at once (one repair at a time, "
-            "repair_crews=1, is worked out)"
-        )
     return None
 
 

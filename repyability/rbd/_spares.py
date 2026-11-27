@@ -2055,6 +2055,12 @@ def _replacements(rbd, node, long_run: bool = False):
     _requirements._require_reliabilities(rbd, node)
     rbd = _requirements._own_failures(rbd, node, simulate)
     if node in rbd._standby:
+        if rbd._standby[node].key == "markov":
+            raise NotImplementedError(
+                f"Component {node!r} is a Markov component, whose "
+                "failures are its chain's moves, not the renewals of a "
+                f"part that takes a spare: {simulate}"
+            )
         raise NotImplementedError(
             f"Component {node!r} is {rbd._standby[node].what}, whose "
             "units' "

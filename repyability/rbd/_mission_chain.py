@@ -1,7 +1,8 @@
 """Exact values of a phased mission with blocks on standby (see
-``PhasedMission.from_diagram``), where every block's life has a constant
-failure rate in every phase: a continuous-time Markov chain over the
-blocks' states, run through the phases.
+``PhasedMission.from_diagram``), or with blocks repaired during its
+phases, where every block's life has a constant failure rate in every
+phase (and every repair is exponential): a continuous-time Markov chain
+over the blocks' states, run through the phases.
 
 With constant rates a block's age does not matter, only whether it is
 running, idle or failed, so the mission is a Markov chain over the
@@ -19,6 +20,13 @@ phase's start every failed block stays failed, every live block on
 standby in the phase goes idle and every other runs, and the structure
 is checked as at a failure.
 
+A block that is repaired during the phases (``_mission_repairs``, where
+no block is on standby) is under repair once failed and running again,
+as good as new, at its repair's rate, whatever the phase: with repairs a
+live mission's failed blocks may come back, while the mission itself,
+failed at the first instant a phase's diagram is down (at a phase's
+start, if it is down then), stays failed.
+
 A failed mission keeps which blocks on standby it had started in the
 phase (for the summary's take-overs) until the phase ends. The states
 reachable in each phase are listed from its starting states, up to
@@ -28,7 +36,16 @@ probability (the failure probabilities are summed from the failed
 states' own, so a small one keeps its precision).
 """
 
-from typing import Any, Callable, Dict, Hashable, List, NamedTuple, Optional
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Hashable,
+    List,
+    Mapping,
+    NamedTuple,
+    Optional,
+)
 
 import numpy as np
 from scipy import sparse
@@ -46,6 +63,18 @@ MAX_STATES = 20_000
 FAILED, RUNNING, IDLE, PASSED, FAILED_STARTED = 0, 1, 2, 3, 4
 _UP = (RUNNING,)
 _IDLE = (IDLE, PASSED)
+
+
+class ChainRefused(NotImplementedError):
+    """The chain cannot be worked out: ``reason`` says why, and the
+    message adds that the mission is then simulated."""
+
+    def __init__(self, reason: str):
+        self.reason = reason
+        super().__init__(
+            f"{reason}, so it is simulated: method='simulate', or "
+            "reliability_interval."
+        )
 
 
 class ChainValues(NamedTuple):
@@ -99,6 +128,41 @@ def _phase_models(life, count: int) -> List[Any]:
     return [life.model] * count
 
 
+def _why(mission) -> str:
+    """Why the mission is worked out by a chain, as its refusals begin."""
+    if mission.repairability:
+        return (
+            "Blocks repaired during the phases come back while the mission "
+            "runs, which depends on when they and the other blocks failed"
+        )
+    return (
+        "Blocks on standby start when the phase needs them, which depends "
+        "on the other blocks' failures"
+    )
+
+
+def repair_rates(mission) -> Dict[Hashable, float]:
+    """Each repaired block's repair rate.
+
+    Raises
+    ------
+    ChainRefused
+        If a block's repair times are not exponential, with the block
+        named.
+    """
+    out: Dict[Hashable, float] = {}
+    for node, model in mission.repairability.items():
+        rate = _rate(model)
+        if rate is None:
+            raise ChainRefused(
+                f"{_why(mission)}; the mission is exact (a Markov chain) "
+                "only where every repair's time is exponential, and that "
+                f"of block {node!r} is not"
+            )
+        out[node] = rate
+    return out
+
+
 def rates(mission) -> Dict[Hashable, List[float]]:
     """Each block's failure rate in each phase, running (0 where it is
     guaranteed).
@@ -120,13 +184,11 @@ def rates(mission) -> Dict[Hashable, List[float]]:
                 continue
             rate = _rate(model)
             if rate is None:
-                raise NotImplementedError(
-                    f"Blocks on standby start when the phase needs them, "
-                    "which depends on the other blocks' failures; the "
+                raise ChainRefused(
+                    f"{_why(mission)}; the "
                     "mission is exact (a Markov chain) only where every "
                     "block's life has a constant failure rate, and block "
-                    f"{node!r} has none in phase {setting.name!r}, so it is "
-                    "simulated: method='simulate', or reliability_interval."
+                    f"{node!r} has none in phase {setting.name!r}"
                 )
             row.append(rate)
         out[node] = row
@@ -136,7 +198,9 @@ def rates(mission) -> Dict[Hashable, List[float]]:
 class _Phase:
     """One phase's chain: its states, generator and starting rule."""
 
-    def __init__(self, mission, j: int, rate, held: Optional[Hashable]):
+    def __init__(
+        self, mission, j: int, rate, held: Mapping[Hashable, bool], repair
+    ):
         self.blocks = list(mission.components)
         self.index = {node: i for i, node in enumerate(self.blocks)}
         setting = mission._settings[j]
@@ -147,14 +211,19 @@ class _Phase:
         self.standby = frozenset(self.order)
         how = [behaviour(setting.setting(node)) for node in self.blocks]
         self.switching = [
-            1.0 if node == held else h.switching
+            1.0 if held.get(node) else h.switching
             for node, h in zip(self.blocks, how)
         ]
         self.running = [
-            0.0 if node == held else rate[node][j] for node in self.blocks
+            0.0 if held.get(node) else rate[node][j] for node in self.blocks
         ]
         self.dormant = [
             r * h.dormancy_factor for r, h in zip(self.running, how)
+        ]
+        # A block held failed is never repaired.
+        self.repair = [
+            0.0 if held.get(node) is False else repair.get(node, 0.0)
+            for node in self.blocks
         ]
         self._works = _structure(mission, phase, self.blocks)
         self.duration = phase.duration
@@ -232,6 +301,10 @@ class _Phase:
                     out.append((self.running[i], p, state))
             elif c in _IDLE and self.dormant[i] > 0.0:
                 out.append((self.dormant[i], 1.0, _put(codes, i, FAILED)))
+            elif c == FAILED and self.repair[i] > 0.0:
+                # Back as good as new: the structure, working without
+                # it, works with it.
+                out.append((self.repair[i], 1.0, _put(codes, i, RUNNING)))
         return out
 
 
@@ -264,21 +337,26 @@ def _structure(mission, phase, blocks) -> Callable[[frozenset], bool]:
 
 def run(
     mission,
-    held: Optional[Hashable] = None,
+    held: Optional[Mapping[Hashable, bool]] = None,
     times: Optional[np.ndarray] = None,
 ) -> ChainValues:
-    """The mission's values from its chain, the block ``held`` (if any)
-    never failing (nor its switch), and its reliability at ``times``
+    """The mission's values from its chain, each block ``held`` working
+    (True: it never fails, nor does its switch, though on standby it
+    still idles until called on) or failed from the start (False), and
+    its reliability at ``times``
     (from 0 to the duration; a time at a phase's boundary belongs to the
     phase starting then).
 
     Raises
     ------
-    NotImplementedError
-        If a block's life has no constant rate in a phase, or a phase's
-        chain reaches more than ``MAX_STATES`` states.
+    ChainRefused
+        If a block's life has no constant rate in a phase, a repair's
+        time is not exponential, or a phase's chain reaches more than
+        ``MAX_STATES`` states.
     """
     rate = rates(mission)
+    repair = repair_rates(mission)
+    held = dict(held or {})
     count = len(mission.phases)
     starts = [phase.end - phase.duration for phase in mission.phases]
     if times is not None:
@@ -286,13 +364,16 @@ def run(
         within = np.searchsorted(starts, flat, side="right") - 1
         curve = np.empty(flat.shape)
     live: Dict[tuple, float] = {
-        tuple(RUNNING for _ in mission.components): 1.0
+        tuple(
+            FAILED if held.get(node) is False else RUNNING
+            for node in mission.components
+        ): 1.0
     }
     failing: List[float] = []
     through: List[float] = []
     takeovers: List[Dict[Hashable, float]] = []
     for j in range(count):
-        chain = _Phase(mission, j, rate, held)
+        chain = _Phase(mission, j, rate, held, repair)
         start: Dict[Any, float] = {}
         for codes, p in live.items():
             for q, state in chain.resolve(chain.entered(codes)):
@@ -374,14 +455,12 @@ def _listed(chain: _Phase, first: List[Any], mission, j: int):
             for rate, p, after in chain.moves(state):
                 if after not in number:
                     if len(states) >= MAX_STATES:
-                        raise NotImplementedError(
-                            "Blocks on standby start when the phase needs "
-                            "them; the mission is exact (a Markov chain over "
+                        raise ChainRefused(
+                            f"{_why(mission)}; the mission is exact (a "
+                            "Markov chain over "
                             "the blocks' states) up to MAX_STATES = "
                             f"{MAX_STATES} states in a phase, and phase "
-                            f"{mission.phases[j].name!r} reaches more, so "
-                            "it is simulated: method='simulate', or "
-                            "reliability_interval."
+                            f"{mission.phases[j].name!r} reaches more"
                         )
                     number[after] = len(states)
                     states.append(after)

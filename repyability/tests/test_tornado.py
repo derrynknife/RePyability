@@ -10,6 +10,7 @@ import surpyval as surv
 
 from repyability import (
     FaultTree,
+    Network,
     NonRepairableRBD,
     RegressionNode,
     RepairableRBD,
@@ -277,3 +278,107 @@ def test_a_tree_of_repaired_events_is_sent_to_its_diagram():
     with pytest.raises(NotImplementedError, match="to_repairable_rbd"):
         tree.tornado(10.0)
     assert tree.analysis_routes()["tornado"].route == "refused"
+
+
+# ----------------------------------------------------------------------
+# Networks
+# ----------------------------------------------------------------------
+
+BRIDGE_ENDS = {
+    "a": ("s", "x"),
+    "b": ("s", "y"),
+    "c": ("x", "y"),
+    "d": ("x", "t"),
+    "e": ("y", "t"),
+}
+
+
+def bridge_network(**options):
+    links = {
+        name: (u, v, W([100.0 + 10 * i, 1.5]))
+        for i, (name, (u, v)) in enumerate(BRIDGE_ENDS.items())
+    }
+    options = options or {"source": "s", "target": "t"}
+    return Network(links, nodes={"x": E([0.01])}, **options)
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {},
+        {"terminals": ["s", "t", "y"]},
+        {"terminals": "all"},
+        {"source": "s", "target": "t", "directed": True},
+    ],
+    ids=["two terminals", "three", "all", "directed"],
+)
+def test_a_network_s_rows_are_its_levers_at_their_ends(options):
+    net = bridge_network(**options)
+    result = net.tornado(40.0)
+    assert isinstance(result, TornadoResult) and not result.skipped
+    assert result.quantity == "reliability"
+    assert result.base_value == float(net.sf(40.0))
+    levers = {(lever.key, lever.name): lever for lever in net.levers()}
+    assert {(row.key, row.name) for row in result.rows} == set(levers)
+    swings = [row.swing for row in result.rows]
+    assert swings == sorted(swings, reverse=True)
+    for row in result.rows:
+        value = levers[(row.key, row.name)].value
+        assert (row.base, row.low, row.high) == pytest.approx(
+            (value, 0.9 * value, 1.1 * value), rel=1e-12
+        )
+        for end, there in (
+            (row.low, row.value_low),
+            (row.high, row.value_high),
+        ):
+            moved = net.with_levers({(row.key, row.name): end})
+            assert there == float(moved.sf(40.0))
+        assert row.swing == abs(row.value_high - row.value_low)
+
+
+def test_a_series_network_in_closed_form():
+    net = Network(
+        {"a": ("s", "x", E([0.01])), "b": ("x", "t", E([0.02]))}, "s", "t"
+    )
+    result = net.tornado(10.0)
+    assert result.base_value == pytest.approx(math.exp(-0.3), rel=1e-14)
+    assert [row.key for row in result.rows] == ["b", "a"]
+    for row, rate, other in zip(result.rows, (0.02, 0.01), (0.01, 0.02)):
+        assert row.value_low == pytest.approx(
+            math.exp(-10 * (0.9 * rate + other)), rel=1e-13
+        )
+        assert row.value_high == pytest.approx(
+            math.exp(-10 * (1.1 * rate + other)), rel=1e-13
+        )
+
+
+def test_a_network_of_probabilities_needs_no_time():
+    net = Network(
+        {"a": ("s", "t", 0.2), "b": ("s", "t", 0.95), "c": ("s", "t", 0.0)},
+        "s",
+        "t",
+    )
+    result = net.tornado(ranges={("b", "p"): (0.9, 1.5)})
+    assert result.base_value == pytest.approx(1.0)
+    rows = {row.key: row for row in result.rows}
+    # Given as a range past 1: cut there, and said.
+    assert (rows["b"].low, rows["b"].high, rows["b"].cut) == (0.9, 1.0, True)
+    assert not rows["a"].cut
+    # A probability of 0 has no relative range.
+    assert [(s["key"], s["name"]) for s in result.skipped] == [("c", "p")]
+    json.dumps(result.to_dict())
+
+
+def test_what_a_network_s_tornado_refuses():
+    net = bridge_network()
+    with pytest.raises(ValueError, match="one time x"):
+        net.tornado([10.0, 20.0])
+    with pytest.raises(ValueError):
+        net.tornado()  # time-varying: x is needed
+    with pytest.raises(ValueError, match="quantity"):
+        net.tornado(10.0, quantity="availability")
+    with pytest.raises(ValueError, match="relative"):
+        net.tornado(10.0, relative=2.0)
+    with pytest.raises(ValueError):
+        net.tornado(10.0, ranges={("zz", "alpha"): (1.0, 2.0)})
+    assert net.analysis_routes()["tornado"].route == "exact"

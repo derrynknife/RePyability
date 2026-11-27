@@ -50,6 +50,7 @@ from repyability.rbd.helper_classes import (
 )
 from repyability.rbd.joint_node import JointNode, as_node
 from repyability.rbd.load_sharing_node import LoadSharingModel
+from repyability.rbd.markov_node import MarkovComponent
 from repyability.rbd.rbd import RBD
 from repyability.rbd.regression_node import RegressionNode
 from repyability.rbd.repeated_node import PARALLEL, RepeatedNode
@@ -72,6 +73,7 @@ _WRAPPERS = {
     "joint_node": JointNode,
     "posterior_predictive": PosteriorPredictive,
     "load_sharing": LoadSharingModel,
+    "markov": MarkovComponent,
 }
 
 
@@ -131,6 +133,8 @@ def _serialise_model(model: Any) -> dict:
         return {"kind": "perfect_unreliability"}
     if isinstance(model, RBD):
         return {"kind": "rbd", "rbd": rbd_to_dict(model)}
+    if isinstance(model, MarkovComponent):
+        return {"kind": "markov", **model.to_dict()}
     if isinstance(model, DegradingNode):
         # Before StandbyModel, which it extends.
         return {
@@ -233,7 +237,7 @@ def _serialise_model(model: Any) -> dict:
         f"Cannot serialise a node model of type {type(model).__name__}. "
         "Only surpyval's models with a to_dict (or a regression's "
         "at(Z)), the "
-        "RePyability node wrappers (standby, degrading, repeated, "
+        "RePyability node wrappers (standby, degrading, Markov, repeated, "
         "NonRepairable, load-sharing, regression, joint, posterior "
         "predictive), surpyval's life at a usage rate, perfect "
         "reliability/unreliability and nested RBDs are supported."
@@ -274,6 +278,8 @@ def deserialise_model(d: dict) -> Any:
             # surpyval before it can be loaded by its name.
             cox_lewis_life()
         return surpyval.from_dict(d["model"])
+    if kind == "markov":
+        return MarkovComponent.from_dict(d)
     if kind == "degrading":
         return DegradingNode(
             [

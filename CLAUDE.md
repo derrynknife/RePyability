@@ -340,6 +340,23 @@ minimum surpyval is in `pyproject.toml` (0.29 as of 0.20).
   (`_standby_chain`) beside it, the generators added over pairs of
   states; `test_first_failure_groups.py` checks both against the
   simulation.
+- **A `MarkovComponent` (`repyability/rbd/markov_node.py`) rides the
+  standby groups' rails in a `RepairableRBD`**: it is in `rbd._standby`
+  as `_events.MARKOV` (key `"markov"`, one unit), so whatever handles or
+  refuses a group of units handles or refuses it; where a group's chain
+  is built from its units' rates, `_long_run._group_chain` gives the
+  component's own (its generator, long-run distribution, up states and
+  failure rates), and `_curves._standby_curve` follows it from its
+  `start` with a vector more for its down states (#237) and one for each
+  working state (its capacities, as a `DegradingNode`'s stages). The
+  loop's `_events._MarkovUnit` draws what the chain states: an
+  exponential time in each state at its total rate out (`SOJOURN`), the
+  next state by the rates' shares (`MOVE`), the state at 0
+  (`MARKOV_START`); a failure is a move from a working state to a failed
+  one. A change to one goes into the other: `test_markov_component.py`
+  checks the chain against closed forms and a matrix exponential, and
+  the simulation against the chain. A site that reads a group's units
+  (`arrangement.units`, its life's rate) must branch on the key.
 - **A phased mission's Markov chain (`repyability/rbd/_mission_chain.py`)
   copies the simulation's take-overs** (`_mission_runs._take_over`,
   `_after_standby`, `draw_switches`): spares called on in the phase's
@@ -350,6 +367,30 @@ minimum surpyval is in `pyproject.toml` (0.29 as of 0.20).
   change to one goes into the other: `test_mission_standby_chain.py`
   checks the chain against closed forms, the decision diagram and the
   simulation.
+- **A phased mission's chain copies the simulation's repairs too**
+  (`repyability/rbd/_mission_repairs.py`, `PhasedMission`'s
+  `repairability`): a repaired block is under repair from its failure
+  and then new, whatever the phase; the mission fails at the first
+  instant the phase's diagram is down, and at a phase's start if it is
+  down then; at one instant failures come first, then a phase's start,
+  then restorations (`play`'s `restore`: strictly before the failure and
+  the phase's end). The chain (`_mission_chain._Phase.moves`' repair
+  moves, `entered`, `resolve`) follows the same rules: a change to one
+  goes into the other. A mission with repairs has no block on standby
+  and no repaired member of a group. `test_mission_repairs.py` checks
+  the chain against chains written out and `first_failure_sf`, the
+  simulation against the chain, the order at one instant, and that
+  missions without repairs play as they did (recorded).
+- **A phased mission's common-cause groups are written into its
+  phases' diagrams (`repyability/rbd/_mission_ccf.py`)**: each shared
+  cause a component `("cause", members)` after every place of each
+  member it fails, in every phase that uses the member, its life an
+  exponential (`Shocks`) or the members' model at the cause's share of
+  its hazard (surpyval's `hr`, a rate split; a probability split is
+  refused). From there the mission is the one written out, for every
+  analysis; it keeps the components as given (`_given`) for its levers
+  and saves the phases as given. `test_mission_ccf.py` checks it against
+  the diagram with the group and closed forms.
 - **A `StandbyModel`'s rules are stated in its draws (`_played`, and
   `_random_warm` and the cold samplers where no spare may fail on
   demand)**: the first `k` units left operate, a waiting spare ages at
@@ -595,6 +636,18 @@ minimum surpyval is in `pyproject.toml` (0.29 as of 0.20).
   `catalogue.event_tree_kinds()` (a new method needs its call in
   `EVENT_TREE_CALLS`).
 
+- **Spares over echelons (`repyability/rbd/_echelons.py`, UC-74) have
+  one statement of a base's pipeline** (`_base_pipeline`: its mean, and
+  its variance, which METRIC sets to the mean), and one distribution
+  from a mean and variance (`_pipeline`). The front is marginal analysis
+  on each part's lower convex hull of backorders against the count held
+  (`_Curve`, a step given only once no count further on can change it),
+  so each point has the fewest backorders at its spend or less.
+  `test_spares_echelons.py` checks it against the model written out term
+  by term, a search of every stock vector, `spares_stock` for one site,
+  and a simulation of the two echelons written in the test (exact where
+  resupply times are independent; VARI-METRIC closer elsewhere).
+
 - **A measure that is a function of the system's values lives once, in
   `repyability/rbd/_measures.py`** (#314, #315): the ratios (improvement
   potential, the risk worths, criticality, Fussell-Vesely from numerators),
@@ -788,7 +841,8 @@ What remains:
   through the members' quantile function at `-expm1(-e)`, `e` the first
   of the causes' exponential times. Build each cause's life with
   surpyval's hazard ratio (`from_params(..., hr=c)`) once the minimum
-  surpyval has it.
+  surpyval has it. (0.29 has it, and a phased mission's groups take it,
+  `_mission_ccf._share`; the diagrams' own split is still to move.)
 
 - **A joint frailty model's own integration in `RepairOrReplace`**
   (`maintenance/_repair_or_replace.py`). surpyval 0.27's

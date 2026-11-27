@@ -101,14 +101,14 @@ def inverse_sampler(model) -> Optional[Sampler]:
     model takes, operation for operation, so the values are identical: the
     distribution's quantile function plus the offset for a plain model, and
     the model's own quantile function for a limited-failure-population or
-    zero-inflated one.
+    zero-inflated one, or one with a hazard ratio.
     """
     if (
         isinstance(model, Parametric)
         and type(model).random is Parametric.random
         and hasattr(model.dist, "qf")
     ):
-        if lfp_p(model) == 1 and model.f0 == 0:
+        if lfp_p(model) == 1 and model.f0 == 0 and model.hr == 1:
             dist, params, gamma = model.dist, model.params, model.gamma
             return lambda u: dist.qf(u, *params) + gamma
         return lambda u: np.asarray(model.qf(u), dtype=float)

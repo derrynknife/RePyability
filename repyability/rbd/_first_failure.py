@@ -233,6 +233,8 @@ def _components_are_plain(rbd) -> None:
             (rbd._imperfect, "imperfect repair", ""),
         ):
             if node in table:
+                if table is rbd._standby and table[node].key == "markov":
+                    what = "a Markov component's own chain"
                 _refuse(
                     f"The exact values do not cover {what}, which "
                     f"component {node!r} has{why}"
@@ -252,11 +254,11 @@ def _groups_fit(rbd) -> None:
                 f"{node!r}) whose units wait for repair crews with other "
                 "components' jobs"
             )
-        component = rbd.components[node]
-        if (
-            _constant_rate(component.reliability) is None
-            or _constant_rate(component.time_to_replace) is None
-        ):
+        from repyability.rbd import _long_run
+
+        try:
+            _long_run._standby_rates(rbd, node)
+        except NotImplementedError:
             _refuse(
                 f"The exact values cover {what} only of units with "
                 "exponential lives and repair times, which those of "
@@ -304,23 +306,19 @@ def _causes(rbd, nodes: list) -> Tuple[Dict[Any, float], List[tuple]]:
     return _crews._crew_causes(rbd, nodes, _member_rates(rbd))
 
 
-def _standby_chain_of(rbd, node):
-    """A standby group's Markov chain (``_standby_chain``), as its curve
-    over time takes it (``_curves._standby_curve``)."""
-    from repyability.rbd import _long_run, _standby_chain
+def _group(rbd, node) -> tuple:
+    """A standby group's Markov chain (or a Markov component's own; see
+    ``_long_run._group_chain``) and its states' probabilities at the
+    start, as its curve over time takes them
+    (``_curves._standby_curve``)."""
+    from repyability.rbd import _long_run
 
-    life, repair = _long_run._standby_rates(rbd, node)
-    arrangement = rbd._standby[node]
-    return _standby_chain.chain(
-        arrangement.units,
-        arrangement.k,
-        life,
-        repair,
-        arrangement.dormancy_factor,
-        arrangement.switching_probability,
-        rbd.repair_crews if _crews._crews_limited(rbd) else None,
-        arrangement.rates,
-    )
+    chain = _long_run._group_chain(rbd, node)
+    if rbd._standby[node].key == "markov":
+        return chain, np.asarray(rbd.components[node]._start, dtype=float)
+    first = np.zeros(len(chain.states))
+    first[0] = 1.0
+    return chain, first
 
 
 def _in_series(structure, term: int) -> bool:
@@ -350,9 +348,12 @@ def _is_series(rbd) -> bool:
 
 def _rates(rbd) -> Optional[Dict[Any, Tuple[float, float]]]:
     """Each component's failure and repair rates (``inf`` for an instant
-    repair) if every life and repair is exponential; None otherwise."""
+    repair) if every life and repair is exponential; None otherwise.
+    (Not a standby group's, which has a chain of its own.)"""
     rates: Dict[Any, Tuple[float, float]] = {}
     for node, component in rbd.components.items():
+        if node in rbd._standby:
+            continue  # a chain of its own (``_groups_fit``)
         life = _constant_rate(component.reliability)
         repair = _repair_rate(component.time_to_replace)
         if life is None or repair is None:
@@ -373,7 +374,7 @@ def _queued(rbd) -> bool:
 
 def _chain_fits(rbd, rates: dict) -> None:
     """Raise if the chain of exponential components is too large."""
-    plain = [node for node in rates if node not in rbd._standby]
+    plain = list(rates)
     count = crew_chain.state_count(
         [rbd._priority.get(node, 0.0) for node in plain],
         [math.isinf(rates[node][1]) for node in plain],
@@ -381,8 +382,7 @@ def _chain_fits(rbd, rates: dict) -> None:
         _crews._call_when(rbd),
     )
     for node in rbd._standby:
-        arrangement = rbd._standby[node]
-        count *= (arrangement.k + 1) * (arrangement.units + 1)
+        count *= len(_group(rbd, node)[0].states)
     if count > crew_chain.MAX_STATES:
         # (With a call-out crew, the states are counted only that far.)
         _refuse(
@@ -462,8 +462,7 @@ def _phases_fit(rbd) -> None:
         count = 1
         for node in module:
             if node in rbd._standby:
-                arrangement = rbd._standby[node]
-                count *= (arrangement.k + 1) * (arrangement.units + 1)
+                count *= len(_group(rbd, node)[0].states)
                 continue
             component = rbd.components[node]
             for what, model in (
@@ -706,13 +705,11 @@ class _Absorbing:
         for node in groups:
             # A standby group's own chain beside the rest: independent of
             # it, so the states are pairs and the generators add.
-            group = _standby_chain_of(rbd, node)
+            group, first = _group(rbd, node)
             count = len(group.states)
             if size * count > MAX_PHASE_STATES:
                 size *= count
                 break
-            first = np.zeros(count)
-            first[0] = 1.0
             begin = np.kron(
                 begin, group.probabilities if start is None else first
             )
@@ -855,6 +852,7 @@ class _Factored:
             rbd.components[node].reliability
             for module in modules
             for node in module
+            if node not in rbd._standby
         ]
         self.chains = [
             _Absorbing(rbd, states, module, level, horizon)

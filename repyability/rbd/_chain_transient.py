@@ -239,13 +239,31 @@ class ChainCurve:
     curve gives): its point availability, and its expected failures and
     the repairs it pays for (its units' failures) before each time, from
     a ``Uniformized`` chain whose vectors are, in each state, whether the
-    group is up, the rate of its failures and that of its units'."""
+    group is up, the rate of its failures and that of its units'; and,
+    for a Markov component, a fourth: whether it is down, for its
+    unavailability worked out as itself (``down_at``, #237)."""
 
     period = None
 
     def __init__(self, chain: Uniformized):
         self.chain = chain
         self.settle = chain.settle
+        #: Whether the chain has the vector of its down states.
+        self.has_down = len(chain.limits) > 3
+
+    def stages_at(self, x: np.ndarray) -> np.ndarray:
+        """A Markov component with capacities: the probability of each
+        state it works in (rows) at the times ``x``, from the chain's
+        vectors after the fourth (one a working state)."""
+        x = np.asarray(x, dtype=float).ravel()
+        return np.clip(self.chain.values(x)[:, 4:], 0.0, 1.0).T
+
+    def down_at(self, x: np.ndarray) -> np.ndarray:
+        """The probability of being down at each time ``x``, summed over
+        the down states."""
+        x = np.asarray(x, dtype=float)
+        down = self.chain.values(x)[:, 3]
+        return np.clip(down, 0.0, 1.0).reshape(x.shape)
 
     def at(self, x: np.ndarray) -> np.ndarray:
         x = np.asarray(x, dtype=float)

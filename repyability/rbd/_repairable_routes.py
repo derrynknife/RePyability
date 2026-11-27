@@ -17,6 +17,7 @@ from repyability.rbd import (
     _ccf_groups,
     _crews,
     _curves,
+    _echelons,
     _event_loop,
     _first_failure,
     _intervals,
@@ -618,6 +619,25 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
                 ),
             )
         )
+    # The stock over echelons: every part needed, its demand each
+    # component's long-run replacements.
+    refusal = r.refusal(partial(_echelons.require, rbd))
+    give(
+        ("spares_front", "spares_allocation"),
+        (
+            r.refused(refusal)
+            if refusal
+            else r.AnalysisRoute(
+                r.NUMERICAL,
+                "Each part's demand its components' long-run replacement "
+                "rates; the depot's pipeline Poisson (Palm's theorem), a "
+                "base's a negative binomial of its mean and variance "
+                '(VARI-METRIC; method="metric" a Poisson), and the stocks '
+                "by marginal analysis on each part's convex hull of "
+                "backorders against the count held.",
+            )
+        ),
+    )
     plan, streamed = _event_loop._stream_plan(rbd, 1.0, 0, False)
     paired = (
         ""
@@ -834,7 +854,13 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
     # Each component's own values, and the long-run costs but the
     # system's downtime, need no structure; nor the expected cost when
     # no running cost is priced.
-    free = {"node_availability", "spares_demand", "spares_stock"}
+    free = {
+        "node_availability",
+        "spares_demand",
+        "spares_stock",
+        "spares_front",
+        "spares_allocation",
+    }
     if not rbd.downtime_cost_rate:
         free |= {"expected_cost_rate", "total_cost"}
     if not rbd.has_costs:

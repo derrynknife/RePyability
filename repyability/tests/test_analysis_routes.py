@@ -231,6 +231,20 @@ def replaced(rbd):
     return next(iter(rbd.components))
 
 
+def echelon_parts(rbd):
+    """Every component a part repaired at its base or at a depot."""
+    return {
+        node: {
+            "price": 1.0 + i,
+            "base_repair_fraction": 0.4,
+            "base_repair_time": 5.0,
+            "depot_repair_time": 40.0,
+            "ship_time": 8.0,
+        }
+        for i, node in enumerate(rbd.components)
+    }
+
+
 REPAIRABLE_CALLS = {
     **{
         name: (lambda name: lambda rbd: getattr(rbd, name)())(name)
@@ -265,6 +279,12 @@ REPAIRABLE_CALLS = {
     "total_cost": lambda rbd: rbd.total_cost(1000.0),
     "spares_demand": lambda rbd: rbd.spares_demand(200.0),
     "spares_stock": lambda rbd: rbd.spares_stock(50.0, fill_rate=0.9),
+    "spares_front": lambda rbd: rbd.spares_front(
+        {"north": 3, "south": 2}, echelon_parts(rbd), budget=6.0
+    ),
+    "spares_allocation": lambda rbd: rbd.spares_allocation(
+        {"north": 3, "south": 2}, echelon_parts(rbd), budget=6.0
+    ),
     "first_failure_sf": lambda rbd: settled(
         lambda: rbd.first_failure_sf([10.0, 200.0], rtol=1e-2)
     ),
@@ -464,7 +484,10 @@ def test_every_analysis_is_called(kinds, calls):
 
 
 def uncertain_element(net):
-    """A link's first parameter known to within 5%."""
+    """A link's first parameter known to within 5% (none for a network
+    of repaired links, which refuses the analyses that take it)."""
+    if net.is_repairable:
+        return None
     for name, model in net.models.items():
         spec = parametric_spec(model)
         if spec is not None:
@@ -483,6 +506,7 @@ NETWORK_CALLS = {
             "df",
             "hf",
             "parameter_sensitivity",
+            "tornado",
             "birnbaum_importance",
             "improvement_potential",
             "risk_achievement_worth",
@@ -519,6 +543,21 @@ NETWORK_CALLS = {
     "bx_life_uncertainty": lambda net: net.bx_life_uncertainty(
         10, uncertain_element(net), n_draws=2, seed=1
     ),
+    # A network of repaired links' own.
+    **{
+        name: (lambda name: lambda net: getattr(net, name)(X))(name)
+        for name in (
+            "point_availability",
+            "point_unavailability",
+            "mission_availability",
+            "mission_unavailability",
+            "failure_frequency",
+            "expected_failures",
+        )
+    },
+    "mean_availability": lambda net: net.mean_availability(),
+    "mean_unavailability": lambda net: net.mean_unavailability(),
+    "system_failure_frequency": lambda net: net.system_failure_frequency(),
 }
 
 BRIDGE_LINKS = {
@@ -532,8 +571,45 @@ BRIDGE_LINKS = {
 
 def networks():
     """Networks of each kind: the bridge with lifetime models and a
-    failing node, and one of fixed probabilities."""
+    failing node, one of fixed probabilities, and the bridge with three
+    terminals, with every node a terminal, and with its links one way;
+    and the bridge with repaired links and a repaired node, between two
+    terminals and between them all."""
+    lifetimes = {
+        name: (u, v, W([100 + 10 * i, 1.5]))
+        for i, (name, (u, v)) in enumerate(BRIDGE_LINKS.items())
+    }
+    repaired = {
+        name: (
+            u,
+            v,
+            {
+                "reliability": W([100 + 10 * i, 1.5]) if i % 2 else E([0.01]),
+                "repairability": E([0.5 + 0.1 * i]),
+            },
+        )
+        for i, (name, (u, v)) in enumerate(BRIDGE_LINKS.items())
+    }
+    hub = {"reliability": E([0.001]), "repairability": W([5.0, 2.0])}
     return {
+        "repaired bridge": Network(repaired, "s", "t", nodes={"x": hub}),
+        "repaired all terminals": Network(repaired, terminals="all"),
+        "three terminals": Network(
+            lifetimes, terminals=["s", "t", "x"], nodes={"x": E([0.01])}
+        ),
+        "all terminals": Network(
+            lifetimes, terminals="all", nodes={"x": E([0.01])}
+        ),
+        "fixed all terminals": Network(
+            {
+                name: (u, v, 0.05 + 0.01 * i)
+                for i, (name, (u, v)) in enumerate(BRIDGE_LINKS.items())
+            },
+            terminals="all",
+        ),
+        "directed": Network(
+            lifetimes, "s", "t", nodes={"x": E([0.01])}, directed=True
+        ),
         "bridge": Network(
             {
                 name: (u, v, W([100 + 10 * i, 1.5]))
@@ -576,6 +652,7 @@ def test_the_network_report_covers_every_public_analysis():
         "levers",
         "to_dict",
         "to_json",
+        "to_rbd",
         "with_levers",
     }
 
@@ -642,11 +719,18 @@ PHASED_CALLS = {
             "risk_reduction_worth",
             "criticality_importance",
             "fussell_vesely",
+            "differential_importance",
+            "joint_importance",
+            "barlow_proschan_importance",
+            "parameter_sensitivity",
             "importances",
         )
     },
     "reliability_interval": (
         lambda mission: mission.reliability_interval(200, seed=1)
+    ),
+    "expected_mission_time": (
+        lambda mission: mission.expected_mission_time(mc_samples=200, seed=1)
     ),
     "reliability_over_time": (
         lambda mission: mission.reliability_over_time(
@@ -672,14 +756,18 @@ def mission():
 
 @pytest.mark.parametrize(
     "limit, expected",
-    [(None, {"exact", "simulated"}), (5, {"refused", "simulated"})],
+    [
+        (None, {"exact", "numerical", "simulated"}),
+        (5, {"refused", "simulated"}),
+    ],
     ids=["worked out", "too large"],
 )
 def test_every_mission_method_does_what_the_report_says(
     limit, expected, monkeypatch
 ):
-    # A mission's analyses are exact, or refused once its decision diagram
-    # passes the limit, and its interval simulated (#316).
+    # A mission's analyses are exact (numerical where integrated or
+    # differenced), or refused once its decision diagram passes the
+    # limit, and its interval simulated (#316).
     if limit is not None:
         monkeypatch.setattr(phased_mission, "MAX_NODES", limit)
     phased = mission()
@@ -712,6 +800,12 @@ def test_the_mission_report_covers_every_public_analysis():
         "analysis_routes",
         "from_diagram",
         "minimal_cut_sets",
+        "from_dict",
+        "from_json",
+        "to_dict",
+        "to_json",
+        "levers",
+        "with_levers",
     }
 
 
@@ -885,6 +979,7 @@ def test_the_readme_says_what_is_simulated():
     # (say, warm standby made exact), the README must change with it.
     readme = source("README.md").read_text()
     nonrepairable, repairable = nonrepairable_kinds(), repairable_kinds()
+    missions = mission_kinds()
 
     def alone(node):
         return NonRepairableRBD([("s", "a"), ("a", "t")], {"a": node})
@@ -1063,6 +1158,18 @@ def test_the_readme_says_what_is_simulated():
         ],
         "Phased missions and networks too large for their decision "
         "diagrams": [],
+        "Phased missions with blocks repaired during their phases, or on "
+        "standby": [
+            (missions["repair_exact"], "reliability", "exact"),
+            (missions["repair_exact"], "birnbaum_importance", "exact"),
+            (missions["repair_exact"], "fussell_vesely", "refused"),
+            (missions["repair"], "reliability", "refused"),
+            (missions["repair"], "reliability_interval", "simulated"),
+            (missions["repair"], "summary", "simulated"),
+            (missions["standby_exact"], "reliability", "exact"),
+            (missions["standby"], "reliability", "refused"),
+            (missions["standby"], "summary", "simulated"),
+        ],
         "Block diagrams too meshed for their decision diagrams": [
             (nonrepairable["too meshed"], "random", "simulated"),
             (
@@ -1139,6 +1246,31 @@ def test_the_readme_says_what_is_simulated():
                 "mean_availability",
                 "refused",
             ),
+        ],
+        "Markov components (states and the rates between them)": [
+            (repairable["Markov component"], name, route)
+            for name, route in (
+                ("mean_availability", "exact"),
+                ("birnbaum_importance", "exact"),
+                ("system_failure_frequency", "exact"),
+                ("point_availability", "numerical"),
+                ("expected_events", "numerical"),
+                ("expected_cost", "numerical"),
+                ("availability", "simulated"),
+                ("first_failure_sf", "refused"),
+                ("first_failure_bounds", "numerical"),
+                ("spares_demand", "refused"),
+                ("spares_stock", "refused"),
+            )
+        ]
+        + [
+            (repairable["Markov component, capacities"], name, route)
+            for name, route in (
+                ("capacity_distribution", "exact"),
+                ("point_capacity", "numerical"),
+                ("mission_capacity", "numerical"),
+                ("availability", "refused"),
+            )
         ],
         "Opportunistic maintenance (renewals at a group's stops)": [
             (
@@ -1288,24 +1420,13 @@ def test_the_readme_says_what_is_simulated():
                 "upgraded at a time, block-replaced",
                 "upgraded at a time, age-replaced",
                 "upgraded at a time, tested",
+                "upgraded at a time, the unit in service kept",
             )
             for analysis, route in (
                 ("expected_npv", "numerical"),
                 ("point_availability", "numerical"),
                 ("availability", "simulated"),
             )
-        ]
-        + [
-            (
-                repairable["upgraded at a time, the unit in service kept"],
-                "expected_npv",
-                "refused",
-            ),
-            (
-                repairable["upgraded at a time, the unit in service kept"],
-                "availability",
-                "simulated",
-            ),
         ],
         'A shelf of spares (a component\'s `"spares"`: a stock reordered '
         "one for one, each order arriving a lead time later)": [

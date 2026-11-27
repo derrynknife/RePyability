@@ -163,16 +163,25 @@ def _node_long_run(rbd, node) -> Tuple[str, str]:
         if not r.refusal(
             partial(functools.partial(_standby_rates, rbd), node)
         ):
+            if rbd._standby[node].key == "markov":
+                return r.EXACT, "the long-run distribution of its Markov chain"
             return r.EXACT, f"the Markov chain of {rbd._standby[node].what}"
         message = r.refusal(
             partial(functools.partial(_require_standby_long_run, rbd), node)
         )
         if message:
             return r.REFUSED, message
+        if _standby_crews(rbd) == 1:
+            return (
+                r.NUMERICAL,
+                "the regeneration cycle of a cold standby pair with one "
+                "repair at a time, by quadrature",
+            )
         return (
             r.NUMERICAL,
-            "the regeneration cycle of a cold standby pair with one repair "
-            "at a time, by quadrature",
+            "the Markov renewal process of a cold standby pair with both "
+            "units repaired at once, on a grid of the other unit's "
+            "elapsed repair",
         )
     if node in rbd._inspection:
         message = r.refusal(
@@ -815,11 +824,13 @@ def _calendar_grid(
         return middle, width / period
     # A tested component's test and repair times have exact CDFs in its
     # profile, which may bend sharply within a cell (a test of hours,
-    # say): two Gauss-Legendre points a cell, exact for its linear grid
-    # values, and to the cell's fourth power for the rest.
-    side = 0.5 * width / np.sqrt(3.0)
-    times = np.stack([middle - side, middle + side], axis=1).ravel()
-    return times, np.repeat(0.5 * width / period, 2)
+    # say): three Gauss-Legendre points a cell, exact for its linear grid
+    # values, and to the cell's sixth power for the rest (two points, to
+    # its fourth, left a product of two units' repairs 1e-8 off).
+    points, shares = np.polynomial.legendre.leggauss(3)
+    times = middle[:, None] + 0.5 * width[:, None] * points[None, :]
+    weights = 0.5 * width[:, None] * shares[None, :] / period
+    return times.ravel(), weights.ravel()
 
 
 def _block_profile(rbd, node, times: np.ndarray, rates: bool = False):
@@ -1217,6 +1228,9 @@ def _standby_rates(rbd, node) -> Tuple[float, float]:
     long-run values; raise if their lives and repair times are not
     exponential."""
     component = rbd.components[node]
+    if rbd._standby[node].key == "markov":
+        # Its chain is its own, at the rates given (see _group_chain).
+        return math.nan, math.nan
     life = _constant_rate(component.reliability)
     repair = _constant_rate(component.time_to_replace)
     if life is None or repair is None:
@@ -1229,6 +1243,37 @@ def _standby_rates(rbd, node) -> Tuple[float, float]:
     return life, repair
 
 
+def _group_chain(rbd, node) -> "_standby_chain.StandbyChain":
+    """The Markov chain of a group of exponential units (see
+    ``_standby_chain.chain``), or a Markov component's own: its states,
+    generator and long-run distribution, and in each state whether it
+    is up and the rates of its failures and of the repairs it pays for
+    (a Markov component's failures, each one)."""
+    life, repair = _standby_rates(rbd, node)
+    arrangement = rbd._standby[node]
+    if arrangement.key == "markov":
+        component = rbd.components[node]
+        failures = component._failures
+        return _standby_chain.StandbyChain(
+            list(component.states),
+            component._generator,
+            component._steady,
+            component._up,
+            failures,
+            failures,
+        )
+    return _standby_chain.chain(
+        arrangement.units,
+        arrangement.k,
+        life,
+        repair,
+        arrangement.dormancy_factor,
+        arrangement.switching_probability,
+        rbd.repair_crews if _crews._crews_limited(rbd) else None,
+        arrangement.rates,
+    )
+
+
 def _standby_crews(rbd) -> Optional[int]:
     """How many of a standby group's units can be repaired at once in its
     long-run values (None: all; see ``_standby_long_run``)."""
@@ -1237,12 +1282,13 @@ def _standby_crews(rbd) -> Optional[int]:
 
 def _standby_cycle_blocker(rbd, node) -> Optional[str]:
     """Why a standby group with lives or repairs that are not exponential
-    has no long-run values from its cycle (``_standby_cycle``), as the
-    refusal's message, or None."""
+    has no long-run values from its cycle (``_standby_cycle``, or
+    ``_standby_both`` with both units repaired at once), as the refusal's
+    message, or None."""
     from repyability.rbd import _standby_cycle
     from repyability.rbd._covariate_schedule import ClockLife
 
-    reason = _standby_cycle.why_not(rbd._standby[node], _standby_crews(rbd))
+    reason = _standby_cycle.why_not(rbd._standby[node])
     component = rbd.components[node]
     if reason is None and any(
         isinstance(m, ClockLife) or not callable(getattr(m, "df", None))
@@ -1255,9 +1301,8 @@ def _standby_cycle_blocker(rbd, node) -> Optional[str]:
         f"Component {node!r} is {rbd._standby[node].what}, whose exact "
         "long-run values come from a Markov chain of its units, which "
         "needs their lives and repair times exponential, or (a cold "
-        "standby pair, one needed, a sure switch, one repair at a time) "
-        f"from its cycle; {reason}: simulate it with availability() or "
-        "cost()."
+        "standby pair, one needed, a sure switch) from its cycle; "
+        f"{reason}: simulate it with availability() or cost()."
     )
 
 
@@ -1275,22 +1320,34 @@ def _require_standby_long_run(rbd, node) -> None:
 def _standby_long_run(rbd, node) -> "_standby_chain.StandbyLongRun":
     """A standby group's long-run values, from its Markov chain (see
     ``_standby_chain``), or with lives or repairs that are not
-    exponential, for a cold standby pair with one repair at a time, from
-    its cycle (``_standby_cycle``). The crews do not tie it to other
+    exponential, for a cold standby pair, from its cycle with one repair
+    at a time (``_standby_cycle``) and from the Markov renewal process
+    on the other unit's elapsed repair with both repaired at once
+    (``_standby_both``). The crews do not tie it to other
     nodes here (see ``_crews_couple``): its units' repairs wait only for
     each other, with ``repair_crews`` crews when they are the crews' only
     jobs."""
-    from repyability.rbd import _standby_cycle
+    from repyability.rbd import _standby_both, _standby_cycle
 
     try:
         life, repair = _standby_rates(rbd, node)
     except NotImplementedError:
         _require_standby_long_run(rbd, node)
         component = rbd.components[node]
-        return _standby_cycle.long_run(
-            component.reliability, component.time_to_replace
-        )
+        pair = _standby_cycle if _standby_crews(rbd) == 1 else _standby_both
+        return pair.long_run(component.reliability, component.time_to_replace)
     arrangement = rbd._standby[node]
+    if arrangement.key == "markov":
+        # Its own chain's: the unavailability summed over its failed
+        # states, as itself.
+        group = _group_chain(rbd, node)
+        steady = group.probabilities
+        return _standby_chain.StandbyLongRun(
+            float(steady @ group.up),
+            float(steady @ group.failures),
+            float(steady @ group.unit_failures),
+            float(steady @ (1.0 - group.up)),
+        )
     return _standby_chain.long_run(
         arrangement.units,
         arrangement.k,

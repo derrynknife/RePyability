@@ -26,6 +26,7 @@ from repyability import (
     DegradingNode,
     JointNode,
     LoadSharingModel,
+    MarkovComponent,
     NonRepairable,
     NonRepairableRBD,
     PerfectReliability,
@@ -122,6 +123,7 @@ NOT_NODES = {
 #: The node classes a NonRepairableRBD takes as a node's model.
 NONREPAIRABLE_NODES = {
     DegradingNode,
+    MarkovComponent,
     LoadSharingModel,
     NonRepairableRBD,
     PerfectReliability,
@@ -136,6 +138,7 @@ NONREPAIRABLE_NODES = {
 #: The node classes a RepairableRBD takes, as a component or its life.
 REPAIRABLE_NODES = {
     DegradingNode,
+    MarkovComponent,
     UnitPlan,
     NonRepairable,
     PerfectReliability,
@@ -191,6 +194,8 @@ def model_kinds(model) -> set:
     cls = model if isinstance(model, type) else type(model)
     if cls in (PerfectReliability, PerfectUnreliability):
         return {cls.__name__}
+    if isinstance(model, MarkovComponent):
+        return {"MarkovComponent"}
     if isinstance(model, DegradingNode):
         return {"DegradingNode"}.union(
             *(model_kinds(stage) for _, stage in model.stages)
@@ -262,7 +267,7 @@ def repairable_kinds(rbd, components, options) -> set:
             continue
         found |= {f"spec key {key!r}" for key in component}
         found |= model_kinds(component["reliability"])
-        if isinstance(component["repairability"], str):
+        if isinstance(component.get("repairability"), str):
             found.add(f"repairability {component['repairability']!r}")
         for key in (
             "preventive",

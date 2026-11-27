@@ -24,12 +24,17 @@ taking already-fitted lifetime models (from
   the exact MTTF (or simulated, with confidence intervals); B*X* life;
   uncertainty intervals on the reliability, MTTF, B*X* life and time to a
   reliability from uncertain (fitted) component models.
-- **Networks**: undirected networks whose links fail: the exact
-  reliability of the connection between two terminals, by a decision
-  diagram that keeps meshed networks fast.
+- **Networks**: networks whose links fail, undirected or directed: the
+  exact reliability of the connection between two terminals, several, or
+  every node (K-terminal and all-terminal reliability), by a decision
+  diagram that keeps meshed networks fast; with repaired links, the
+  connection's availability over time and in the long run, and how often
+  it is lost.
 - **Phased missions**: missions through phases (take-off, cruise,
   landing), each with its own diagram over the same components: the exact
-  mission reliability and the chance of failing in each phase.
+  mission reliability and the chance of failing in each phase, with
+  common-cause groups whose causes fail their members from the phase they
+  strike in, and blocks repaired while the mission runs.
 - **Importance**: Birnbaum, improvement potential, RAW, RRW, criticality,
   Fussell–Vesely, structural importance and parameter sensitivity, on
   repairable systems in the long run or over time.
@@ -180,17 +185,18 @@ Which analyses each model type has (the method; — where it has none):
 | Top event probability | — | — | `top_event_probability` | — | — | — |
 | Each phase's failure probability | — | — | — | — | `phase_failure_probabilities` | — |
 | Reliability over a mission's time | — | — | — | — | `reliability_over_time` | — |
+| Expected time a mission runs (to failure or its end) | — | — | — | — | `expected_mission_time` | — |
 | A mission's results from one run | — | — | — | — | `summary` | — |
 | **Availability and outages** | | | | | | |
 | Reliability and mean time to the first failure | — | `first_failure_sf` | — | — | — | — |
-| Long-run availability | — | `mean_availability` | — | — | — | — |
+| Long-run availability | — | `mean_availability` | — | `mean_availability` | — | — |
 | Each node's availability | — | `node_availability` | — | — | — | — |
-| Availability over time | — | `point_availability` | `point_unavailability` | — | — | — |
-| Over a mission | — | `mission_availability` | — | — | — | — |
-| Unavailability (precise when small) | — | `mean_unavailability` | `mean_unavailability` | — | — | — |
-| Failure frequency, MTBF | — | `system_failure_frequency` | `system_failure_frequency` | — | — | — |
+| Availability over time | — | `point_availability` | `point_unavailability` | `point_availability` | — | — |
+| Over a mission | — | `mission_availability` | — | `mission_availability` | — | — |
+| Unavailability (precise when small) | — | `mean_unavailability` | `mean_unavailability` | `mean_unavailability` | — | — |
+| Failure frequency, MTBF | — | `system_failure_frequency` | `system_failure_frequency` | `system_failure_frequency` | — | — |
 | Mean up and down times | — | `mean_up_time` | — | — | — | — |
-| Expected failures and events in a window | — | `expected_events` | `expected_failures` | — | — | — |
+| Expected failures and events in a window | — | `expected_events` | `expected_failures` | `expected_failures` | — | — |
 | Simulated availability (distribution) | — | `availability` | — | — | — | — |
 | Simulated histories | — | `simulate_timelines` | — | — | — | — |
 | Each simulation's values, common random numbers | — | `simulation_samples` | — | — | — | — |
@@ -212,6 +218,7 @@ Which analyses each model type has (the method; — where it has none):
 | A replaced component's renewal cycle | — | `replacement_cycle` | — | — | — | — |
 | Planned and unplanned downtime, failures the plan avoids | — | `maintenance_effect` | — | — | — | — |
 | Spares demand and stock | — | `spares_demand` | — | — | — | — |
+| Repairable spares over bases and a depot | — | `spares_front` | — | — | — | — |
 | **Structure** | | | | | | |
 | Minimal path and cut sets | `minimal_cut_sets` | `minimal_cut_sets` | `minimal_cut_sets` | `minimal_cut_sets` | `minimal_cut_sets` | — |
 | Prime implicants (NOT gates) | — | — | `prime_implicants` | — | — | — |
@@ -221,11 +228,11 @@ Which analyses each model type has (the method; — where it has none):
 | Structure sizes (counts, depth, core) | `structure_summary` | `structure_summary` | — | — | — | — |
 | The core that does not reduce | `core_structure` | `core_structure` | — | — | — | — |
 | Junctions (drawing nodes) | `junctions` | `junctions` | — | — | — | — |
-| Convert to and from an RBD | — | — | `to_rbd` | — | `from_diagram` | — |
+| Convert to and from an RBD | — | — | `to_rbd` | `to_rbd` | `from_diagram` | — |
 | Capacity distribution | `capacity_distribution` | `capacity_distribution` | — | — | — | — |
 | Capacity over time | — | `point_capacity` | — | — | — | — |
 | How each analysis is computed | `analysis_routes` | `analysis_routes` | `analysis_routes` | `analysis_routes` | `analysis_routes` | `analysis_routes` |
-| Save and load (dict, JSON) | `to_dict` | `to_dict` | `to_dict` | `to_dict` | — | `to_dict` |
+| Save and load (dict, JSON) | `to_dict` | `to_dict` | `to_dict` | `to_dict` | `to_dict` | `to_dict` |
 | Export to Open-PSA (MEF) | — | — | `to_open_psa` | — | — | — |
 | Import from Open-PSA (MEF) | — | — | `from_open_psa` | — | — | — |
 | **Event trees (an initiating event through its barriers)** | | | | | | |
@@ -248,9 +255,9 @@ Which analyses each model type has (the method; — where it has none):
 | Risk reduction worth | `risk_reduction_worth` | `risk_reduction_worth` | `risk_reduction_worth` | `risk_reduction_worth` | `risk_reduction_worth` | — |
 | Criticality | `criticality_importance` | `criticality_importance` | `criticality_importance` | `criticality_importance` | `criticality_importance` | — |
 | Fussell-Vesely | `fussell_vesely` | `fussell_vesely` | `fussell_vesely` | `fussell_vesely` | `fussell_vesely` | `fussell_vesely` |
-| Differential (DIM) | `differential_importance` | `differential_importance` | `differential_importance` | `differential_importance` | — | — |
-| Joint (second order) | `joint_importance` | `joint_importance` | `joint_importance` | `joint_importance` | — | — |
-| Barlow-Proschan | `barlow_proschan_importance` | `barlow_proschan_importance` | `barlow_proschan_importance` | `barlow_proschan_importance` | — | — |
+| Differential (DIM) | `differential_importance` | `differential_importance` | `differential_importance` | `differential_importance` | `differential_importance` | — |
+| Joint (second order) | `joint_importance` | `joint_importance` | `joint_importance` | `joint_importance` | `joint_importance` | — |
+| Barlow-Proschan | `barlow_proschan_importance` | `barlow_proschan_importance` | `barlow_proschan_importance` | `barlow_proschan_importance` | `barlow_proschan_importance` | — |
 | Shares of a safety function's PFDavg, common cause apart | — | `pfd_breakdown` | — | — | — | — |
 | Each block's part in each phase's failures | — | — | — | — | `failure_drivers` | — |
 | Rate of change over time | `reliability_rate` | `availability_rate` | — | — | — | — |
@@ -258,8 +265,8 @@ Which analyses each model type has (the method; — where it has none):
 | Every measure in one call | `importances` | `importances` | `importances` | `importances` | `importances` | — |
 | All measures given a state | `importances_given_state` | — | — | — | — | — |
 | Top event given each event | — | — | `conditional_probabilities` | — | — | — |
-| Parameter sensitivity, levers | `parameter_sensitivity` | `parameter_sensitivity` | `parameter_sensitivity` | `parameter_sensitivity` | — | — |
-| Tornado data (each lever at its low and high) | `tornado` | `tornado` | `tornado` | — | — | — |
+| Parameter sensitivity, levers | `parameter_sensitivity` | `parameter_sensitivity` | `parameter_sensitivity` | `parameter_sensitivity` | `parameter_sensitivity` | — |
+| Tornado data (each lever at its low and high) | `tornado` | `tornado` | `tornado` | `tornado` | — | — |
 | **Uncertainty** | | | | | | |
 | Of the reliability or availability | `sf_uncertainty` | `mean_availability_uncertainty` | `sf_uncertainty` | `sf_uncertainty` | `reliability_interval` | — |
 | Of the MTTF | `mean_uncertainty` | — | `mean_uncertainty` | `mean_uncertainty` | — | — |
@@ -292,6 +299,7 @@ How each family of analyses is worked out on a diagram with each kind of node or
 | A fitted degradation process | E | N | N | E N | E N | E N | S | E N | – | S |
 | Cold standby (convolved) | N | N | N | N | N | N | S | N | – | S |
 | Standby with no reliability of its own | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | N; ✗ `allocate_redundancy` | – | S |
+| A Markov component with a lifetime | E | N | N | E N | E N | E N | S | E N | – | S |
 | Load sharing | E | N | N | E N | E N | E N | S | E N | – | S |
 | A repeated node | E | N | N | E N | E N | E N | S | E N | – | S |
 | A repeated standby node | N | N | N | N | N | N | S | N | – | S |
@@ -337,13 +345,15 @@ How each family of analyses is worked out on a diagram with each kind of node or
 | An upgrade (another life from a time) | E | E | N | E N | E N | E N | S | E; ✗ `allocate_redundancy` | – | ✗ | – | S |
 | An upgrade, age-replaced | N | N | N | N | N | N | S | N; ✗ `allocate_redundancy` | ✗ `optimal_replacement_intervals` | ✗ | – | S |
 | An upgrade, tested | N | N | N | N | N | N | S | N; ✗ `allocate_redundancy` | ✗ `optimal_inspection_intervals` | N | – | S |
-| An upgrade, the unit in service kept | N | N | ✗ | N; ✗ `expected_cost`, `expected_npv` | N; ✗ `availability_rate` | N | S; ✗ `expected_npv_uncertainty` | N; ✗ `allocate_redundancy` | ✗ `optimal_replacement_intervals` | ✗ | – | S |
+| An upgrade, the unit in service kept | N | N | N | N | N | N | S | N; ✗ `allocate_redundancy` | ✗ `optimal_replacement_intervals` | ✗ | – | S |
 | A shelf of spares | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
 | Imperfect repair (Kijima) | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
 | Minimal repair | ✗ | ✗ | N | N; ✗ `expected_cost_rate` | N; ✗ 10 of 11 | ✗ | S; ✗ `mean_availability_uncertainty`, `expected_cost_rate_uncertainty` | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
 | Minimal repair, repairs that take time | ✗ | ✗ | N | N; ✗ `expected_cost_rate` | N; ✗ 10 of 11 | ✗ | S; ✗ `mean_availability_uncertainty`, `expected_cost_rate_uncertainty` | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
 | Limited repair crews | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
 | A standby group | E | E | N | E N | E N | E N | S | E | – | ✗ | – | S |
+| A Markov component (states and rates) | E | E | N | E N | E N | E N | S | E | – | ✗ | – | S |
+| A Markov component with a capacity in each state | E | E | N | N | E N | E N | S | E | – | ✗ | E N | S; ✗ `availability` |
 | A beta-factor group, revealed failures | E | E | N | N | E N | E N | S | E | – | N | – | S |
 | A beta-factor group, tested | E | E | N | E N | E N | E N | S | E | – | N | – | S |
 | An alpha-factor group, revealed failures | E | E | N | N | E N | E N | S | E | – | N | – | S |
@@ -377,7 +387,10 @@ places, nested diagrams):
   probabilities (a diagram refuses a non-parametric fit, such as
   Kaplan–Meier: fit a parametric distribution in surpyval); a unit of a
   surpyval joint model of readings and failures, given its readings
-  (`JointNode`, from now); repeated nodes; standby of Exponential units
+  (`JointNode`, from now); repeated nodes; a component given as a Markov chain
+  (`MarkovComponent`: its states, the rates between them and the states
+  it works in, with a lifetime or restored by its own transitions);
+  standby of Exponential units
   (any number operating, any dormancy); cold standby with one or two
   units operating (any units) or more (identical units); warm standby
   with one unit operating, and hot standby (any units); spares that may
@@ -429,17 +442,19 @@ places, nested diagrams):
 | Common-cause groups: analyses given ages for members of different ages or a group splitting a failure probability, and the MTTF of such a group | Refused (a simulated MTTF leaves a probability split out) | No. A group splitting the failure rate (`basis="rate"`) is exact given its members' one age, as a share of their hazard is one hazard only then, and a shock at its own rate that fails members of any lives and ages is an exponential node in series with them, and `shock_nodes` writes out shocks that fail each member with a probability ([the guide](docs/guide/common-cause-ages.md)). A group splitting the failure rate has an exact MTTF, and the simulations draw its shared shocks. Importance, parameter sensitivity and redundancy allocation are exact with groups (a beta-factor member's copies join its group), and parameter uncertainty is sampled with them. |
 | **Architecture and maintenance** | | |
 | Phased missions and networks too large for their decision diagrams | Refused, pointing to `method="simulate"` | Only in practice: the diagrams grow with the phases' and the network's width rather than their paths, so meshed missions and networks are exact (a network grid of 100 nodes in a second and a half); one of 121 nodes passes the limit, `repyability.network.MAX_STATES`, which can be raised. |
+| Phased missions with blocks repaired during their phases, or on standby | Exact (`reliability`, `phase_failure_probabilities`, the measures a block is held in) where every life has a constant failure rate in every phase and every repair is exponential; simulated otherwise (`reliability_interval`, `summary`, `method="simulate"`), the exact routes refusing | Not for wear-out lives: a block's age then matters to when it is back or called on. Exponential lives and repairs are a Markov chain over the blocks' states, carried through the phases, a phase's down states absorbing. |
 | Block diagrams too meshed for their decision diagrams | Simulated (lifetimes, availability, cost and timelines, in Python); the exact and numerical analyses refused | Only in practice: the diagram grows with how wide the mesh is rather than with its paths, so most meshes are exact (a 10 × 10 grid in 0.04 seconds, a random mesh of 60 nodes and 345 links in 2); one of 70 nodes and 485 links passes the limit, `repyability.rbd.bdd.STEP_LIMIT`, which can be raised. |
 | Common-cause groups in a repairable diagram | For exponential lives, tested or repaired: the long run, importance and the allocations exact (a beta-factor member's copies join its group, and the availability allocations keep the members' availability), and numerical where the members' tests and repairs take time (#220): a fixed or an exponential time exactly, any other length on pieces of the time since the test (#106); the values over time numerical (the groups' Markov chains), from new, from the members' states or from the long run (#106), and the simulations draw the shared causes, from new or from the members' states, in Python. Shocks at a rate of their own (`Shocks`: each failing each member with a probability, the members of any lives, each then repaired or found at its test on its own): for exponential members, tested or repaired, of rates, repairs and tests of their own, exact as the groups that split the rate are (the long run, importance, the values over time, a member's own availability and spares, and with repair crews), and simulated, in Python, for members of any lives, maintained on a schedule, repaired imperfectly, in a maintenance group or started from a state (a tested member perhaps failed, unseen, by a shock since its last test). Members of other lives in the groups that split the rate refused, as are copies of members whose tests or repairs take time, tests and repairs that can run into the next test, and members held | Other lives: a shared cause has no one rate for members of different ages, so they need a model first. Shocks at their own rate are that model for members of any lives, exact for exponential members and otherwise simulated; their chain would need each member's age, so yes, in general. Without repairs, [the guide](docs/guide/common-cause-ages.md) has a second: a share of the hazard of members of one age. |
 | Shared repair crews | For exponential lives and repairs, the long run and importance exact, and the values over time numerical (the same Markov chain, followed by uniformization), and the redundancy allocation exact (each design's chain, its copies queueing for the crews), but the allocations of availability targets; common-cause groups in the same chain, a strike's members queueing in the diagram's order; other lives simulated. The maintenance and test intervals are chosen as if every repair started at once on request (`assume_unlimited_crews=True`), for a plan to simulate with the crews | Other lives: yes, in general. |
-| Standby groups (a duty unit and its spares, repaired) | For exponential units, the long run and importance exact, and the values over time numerical (the units' Markov chain, followed by uniformization); other units simulated | Other units: yes, in general. |
+| Standby groups (a duty unit and its spares, repaired) | For exponential units, the long run and importance exact, and the values over time numerical (the units' Markov chain, followed by uniformization); other units simulated, but the long run of a cold pair (one needed, a sure switch), which is numerical: its cycle with one repair at a time, a Markov renewal process on the other unit's elapsed repair with both repaired at once | Other units: yes, in general, but for the pair's long run; its values over time, warm spares, a switch that can fail and more units could be numerical. |
+| Markov components (states and the rates between them) | The long run, importance and long-run capacity exact (the chain's long-run distribution), and the values over time, the expected events and costs over a window and the capacity over time numerical (the chain followed from its start by uniformization); the simulations draw its times in each state and its next states, in Python. Refused: repair crews in its diagram, membership of a common-cause group, maintenance, tests and spares on it (write them as states and rates), the exact first failure (bracketed by `first_failure_bounds`), the spares analyses, and a simulation that follows its states' capacities | No: the chain is exact. The first failure of a diagram with one is the joint chain with its failed states made absorbing; the simulations could follow the capacity of the state it is in. |
 | Opportunistic maintenance (renewals at a group's stops) | Simulated | Yes: each member's renewals depend on the others' ages. |
 | Imperfect repair (Kijima), with or without replacement at the *N*-th failure | Simulated; but minimal repair (`q = 1`, or a fitted Crow-AMSAA, Duane or Cox-Lewis process) is numerical over a window from new, and its long run, replaced at the *N*-th failure or at an age, is exact (a renewal cycle; Cox-Lewis's with a failure limit by quadrature, #402); without a replacement its long run is refused | Yes, in general: a repair does not renew the unit. Minimal repair's values over time with replacement could be numerical, as a renewal of its cycle. |
 | Preventive maintenance that restores a unit only partly (Kijima), with or without replacement at every *N*-th task | Simulated (availability, cost, timelines and the spares used, in Python), from new or from the unit's virtual age; the exact and numerical analyses refused | Yes, in general: a task does not renew the unit, so its failures are not a renewal process's. |
 | Shutdowns: outages that hold the system or some blocks off line for a fixed time, the blocks' work done in them | On a period, over blocks that fail independently: exact or numerical as the blocks' own values are (the long run, the values over time, the expected events, costs and NPV), "older than" numerical; the simulations follow the windows, in Python. At given times (outages on a timeline), the same over a horizon where the blocks worked on are renewed at each, or kept unless due (numerical, stretch by stretch), and no long run (refused: the outages end); so too a block renewed at several shutdowns, each renewal its own shut's length. With a restoration at a shut, a block tested at given times, or with blocks tied together (crews, common causes, maintenance groups): simulated. The importance measures, capacities, first failure, spares, allocations, parameter uncertainty and interval searches refused for now | A block tested at given times: no, its recursion could take the times as the renewed and the kept block's do. A restoration: yes (the unit's virtual age is not a renewal's). The rest are not taken in yet. |
 | Planned against unplanned downtime, and the failures a plan avoids (`maintenance_effect`) | Exact or numerical where the diagram's and its run-to-failure twin's values over a window are, over blocks that fail independently: each block's probability of having failed over time, beside its downtime, from its curve (maintenance and timed tests at age or on a calendar, shuts on a period or at given times, nested RBDs), in the long run too (where there is one); the simulations follow it path by path, on both engines. With planned outages and limited repair crews or common-cause groups, or with partial restoration: simulated | Crews and common-cause groups, no: their chains could keep a block in planned work apart from one in a repair, as a single block's curve does. |
 | Replacement on condition by a measured degradation level | Numerical, from new, from a state (a level measured now, new on its calendar, or in a repair or replacement) and in the long run: the values over time and the long run follow the level's distribution on a grid of levels from one inspection to the next, as replacement on condition by age follows ages; the simulations (in Python) give the spread | No: between inspections the level is a Markov process. |
-| An upgraded part (another life from a time) | Numerical over a horizon (the availability, expected events, costs and NPV), from new or from a state, on its own or with block or age replacement, or with tests and repairs in no time that find every failure: the unit in service replaced at the upgrade; the simulations follow it, in Python; the long run is that once upgraded. Kept in service until its next failure or due replacement (`"replace_in_service": False`), or tested with tests or repairs that take time or tests that miss failures: simulated, the values over a horizon refused | No: a unit kept is a renewal from its age at the upgrade, and the tests that take time could be followed on each side of it, as tests in no time are. |
+| An upgraded part (another life from a time) | Numerical over a horizon (the availability, expected events, costs and NPV), from new or from a state, on its own or with block or age replacement, or with tests and repairs in no time that find every failure: the unit in service replaced at the upgrade; kept in service until its next failure or due replacement (`"replace_in_service": False`) on its own or with age replacement, each unit with the life in service when it is put in; the simulations follow it, in Python; the long run is that once upgraded. Kept in service with block replacement or tests, or tested with tests or repairs that take time or tests that miss failures: simulated, the values over a horizon refused | No: a unit kept under block replacement is the stretch with the upgrade split as age replacement's is, and the tests that take time could be followed on each side of it, as tests in no time are. |
 | A shelf of spares (a component's `"spares"`: a stock reordered one for one, each order arriving a lead time later) | Simulated (availability, cost, timelines, the spares used and the stock to hold, in Python; the compiled engine refuses it); the exact and numerical analyses refuse the node, but those of the node probabilities given or of the structure alone | Yes, in general: a repair that finds the shelf empty waits for the next order to arrive, so each unit's downtime depends on the demands before it. A unit replaced at a constant rate with no stock is a renewal with its repair lengthened by the lead time, and a stock that never runs out is no shelf. |
 | Spares with repair crews, standby groups, opportunistic maintenance, imperfect repair or partial restoration | Refused, pointing to `spares_demand(method="simulate")`. Otherwise numerical, demand and stock: block-replaced components' whether their repairs and block replacements take time or not (from a typical replacement in the long run), but for one dead on arrival while they may take none, and tested components', whatever their tests and repairs take and whether their tests miss failures | Yes, in general: a crew's queue, a group's switching or stops, an imperfect repair and a partial restoration make the replacements depend on more than each unit's own lives. A unit dead on arrival whose renewals may take no time: no, the replacements at one instant could be counted. |
 

@@ -137,6 +137,15 @@ def is_diagram_life(model) -> bool:
     return isinstance(model, NonRepairableRBD) and not model.is_fixed
 
 
+def is_markov_life(model) -> bool:
+    """Whether ``model`` is a ``MarkovComponent`` with a lifetime (no
+    way back from its failed states), taken as a life by its
+    functions."""
+    from .markov_node import MarkovComponent
+
+    return isinstance(model, MarkovComponent) and not model.repairable
+
+
 def by_functions(model) -> bool:
     """Whether ``model`` is a life taken by what it can do (#93): a
     surpyval model none of the kinds RePyability takes by its class (a
@@ -153,7 +162,7 @@ def by_functions(model) -> bool:
     from ._degradation import is_degradation
     from .joint_node import is_joint
 
-    if is_diagram_life(model):
+    if is_diagram_life(model) or is_markov_life(model):
         return True
     if not type(model).__module__.startswith("surpyval."):
         return False
@@ -483,12 +492,58 @@ def usage_spec(model) -> Optional[UsageSpec]:
     return UsageSpec(model, [float(model.rate)], ["rate"], [(0, None)])
 
 
+class MarkovSpec(NamedTuple):
+    """A Markov component's rates as levers (``MarkovComponent``), with
+    the interface of a ``ParametricSpec``: ``params`` its transitions'
+    rates, ``names`` ``"rate:<from>-><to>"`` for each, ``bounds`` 0
+    and up, and ``build(values)`` the component with them at
+    ``values``."""
+
+    component: Any
+    params: List[float]
+    names: List[str]
+    bounds: List[tuple]
+    #: No surpyval distribution's (see ``ParametricSpec``).
+    cls: Any = None
+    extras: Any = {}
+
+    def build(self, values) -> Any:
+        """The component with its rates at ``values``."""
+        return self.component.with_rates(
+            {
+                move: float(value)
+                for move, value in zip(self.component.rates, values)
+            }
+        )
+
+
+def markov_spec(model) -> Optional[MarkovSpec]:
+    """The rates of a Markov component, as levers, or None for any
+    other model."""
+    from .markov_node import MarkovComponent
+
+    if not isinstance(model, MarkovComponent):
+        return None
+    return MarkovSpec(
+        model,
+        [float(rate) for rate in model.rates.values()],
+        model.rate_names(),
+        [(0, None)] * len(model.rates),
+    )
+
+
 def lever_spec(model):
     """What parameter sensitivity moves in a node's model: its
     parameters (``parametric_spec``), a regression node's covariates
-    (``covariate_spec``), or a life at a usage rate's rate
-    (``usage_spec``); None for a model with none."""
-    return parametric_spec(model) or covariate_spec(model) or usage_spec(model)
+    (``covariate_spec``), a life at a usage rate's rate
+    (``usage_spec``), or a Markov component's rates (``markov_spec``);
+    None for a model with none."""
+    return (
+        parametric_spec(model)
+        or covariate_spec(model)
+        or usage_spec(model)
+        or markov_spec(model)
+    )
 
 
 def nonparametric(model) -> bool:

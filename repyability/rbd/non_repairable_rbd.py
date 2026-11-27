@@ -95,6 +95,7 @@ from .helper_classes import (
 )
 from .joint_node import JointNode, as_node, is_joint
 from .load_sharing_node import LoadSharingModel
+from .markov_node import MarkovComponent
 from .modular import GraphStructure
 from .node_state import NodeState
 from .rbd import (
@@ -424,6 +425,13 @@ def _check_model(node, model) -> None:
     saying what to give instead; a number most likely means a
     probability."""
     no_distribution(model, f"The model of node {node!r}")
+    if isinstance(model, MarkovComponent) and model.repairable:
+        raise ValueError(
+            f"The model of node {node!r} is a Markov component that is "
+            "restored from its failed states, so it has no one lifetime: "
+            "give it as a component of a RepairableRBD, or leave out the "
+            "transitions back for the time to its first failure."
+        )
     if is_joint(model) and not isinstance(model, JointNode):
         raise TypeError(
             f"The model of node {node!r} is a surpyval JointModel, whose "
@@ -1225,8 +1233,9 @@ class NonRepairableRBD(RBD):
 
     def _capacity_models(self) -> dict:
         """``{node: model}`` for the nodes with no capacity entry whose model
-        has a capacity distribution of its own: a ``DegradingNode``, or a
-        nested ``NonRepairableRBD`` with capacities."""
+        has a capacity distribution of its own: a ``DegradingNode``, a
+        ``MarkovComponent`` with a capacity in each state, or a nested
+        ``NonRepairableRBD`` with capacities."""
         return {
             node: model
             for node, model in self.reliabilities.items()
@@ -1234,6 +1243,10 @@ class NonRepairableRBD(RBD):
             and node not in self.in_or_out
             and (
                 isinstance(model, DegradingNode)
+                or (
+                    isinstance(model, MarkovComponent)
+                    and model.capacity is not None
+                )
                 or (
                     isinstance(model, NonRepairableRBD)
                     and model._has_capacity()

@@ -73,10 +73,15 @@ A `FaultTree` saves the same way (`to_dict`, `to_json`, `from_dict`,
 `from_json`: its gates, events (a repaired event's spec as a diagram's
 component's) and common-cause groups), and so does a
 `Network` (#315): its terminals, each link's two nodes and model, and the
-failing nodes' models, the models as a diagram's nodes' are saved, under
+failing nodes' models, the models as a diagram's nodes' are saved (a
+repaired element's spec as a diagram's component's), under
 `"type": "Network"`. A model given as a probability is saved as the
 `FixedEventProbability` it is taken as; one that is not surpyval's cannot
-be saved.
+be saved. A `PhasedMission` saves under `"type": "PhasedMission"`: each
+phase's name, duration and diagram, or, for a mission drawn as one diagram
+(`from_diagram`), the diagram once and each phase's name, duration, blocks'
+settings (states, covariates, models, start probabilities and dormancy)
+and vote counts.
 
 ## Reproducibility
 
@@ -86,8 +91,8 @@ Every Monte-Carlo method takes a `seed`:
 |---|---|
 | `NonRepairableRBD` | `random`, `mean`, `mean_time_to_failure` and `compare` with `method="simulate"`, `mean_time_to_failure_interval` |
 | `RepairableRBD` | `availability`, `cost`, `compare` with `control_variate=False` (or where the exact methods do not reach), `spares_demand` and `maintenance_effect` with `method="simulate"` (or, over a window, where the exact methods do not reach) |
-| Node models | `RepeatedNode.random`, `RepeatedNode.mean` with `method="simulate"`, `RepeatedStandbyNode.random`, `StandbyModel.random`, `LoadSharingModel.random`, `DegradingNode.random`, and the `mean` of a `StandbyModel`, `LoadSharingModel` or `DegradingNode` with `method="simulate"` (or with `mc_samples` or `seed`, where it has no exact mean) |
-| `PhasedMission` | `reliability`, `unreliability` and `phase_failure_probabilities` with `method="simulate"`, `reliability_interval` |
+| Node models | `RepeatedNode.random`, `RepeatedNode.mean` with `method="simulate"`, `RepeatedStandbyNode.random`, `StandbyModel.random`, `LoadSharingModel.random`, `DegradingNode.random`, `MarkovComponent.random`, and the `mean` of a `StandbyModel`, `LoadSharingModel` or `DegradingNode` with `method="simulate"` (or with `mc_samples` or `seed`, where it has no exact mean) |
+| `PhasedMission` | `reliability`, `unreliability`, `phase_failure_probabilities` and `expected_mission_time` with `method="simulate"`, `reliability_interval` |
 | `Network` | `sf`, `ff` and `mean` with `method="simulate"`, `random`, `sf_uncertainty`, `mean_uncertainty` |
 | `Repairable` | every simulation-backed method |
 

@@ -42,6 +42,231 @@ release between minors that only adds (0.19.1).
   state, which moves a value by up to about 1e-15 (1e-13 of a mean). A
   chain that can never fail now gives exactly 1. No seeded result
   changes.
+- Long-run values of a cold standby pair of any lives and repairs with
+  both units repaired at once (a crew each, the default), which only a
+  simulation gave (one repair at a time already had its cycle): two
+  units, one needed, a cold spare that switches in surely. Each time a
+  unit starts to operate, what follows depends only on how long the
+  other's repair has run, so the pair is a Markov renewal process on that
+  time; its equation is solved on a grid (the times rounded to it, from
+  the distribution functions alone, by fast Fourier transforms), halved
+  until two extrapolated solutions agree to 1e-8. `mean_availability`,
+  `mean_unavailability`, the frequencies and the cost rate take it,
+  inside larger diagrams too, and `analysis_routes()` says so. Checked:
+  exponential units equal the Markov chain to 1e-9 (within 2e-10);
+  exponential repairs against the memoryless closed form (1e-7) for
+  Weibull lives of shape 3 and 0.8 and a lognormal; an unavailability of
+  4e-13 against its quadrature; Weibull(1000, 2.5) lives and
+  Weibull(300, 1.5) repairs 0.991724 against 0.991722 simulated (400
+  runs of 1e6 h, standard error 6.4e-5, -0.03 SE), and Weibull(1000,
+  1.5) lives with LogNormal(5, 0.6) repairs 0.992867 against 0.992870
+  (standard error 4.9e-5, +0.04 SE). A pair whose lives are a small
+  fraction of its repairs warns where the grid does not settle, and is
+  refused where it cannot. Warm spares, failing switches, more units and
+  values over time stay simulated.
+- `RepairableRBD.spares_front(bases, parts, budget=, target_availability=)`
+  and `spares_allocation(...)`: repairable spares over two echelons, the
+  bases a fleet's systems run from and a depot behind them (Sherbrooke's
+  METRIC and VARI-METRIC). Each part has a price, the chance a failure
+  is repaired at the base, the base's and the depot's repair times and
+  the order-and-ship time; its demand is the diagram's long-run
+  replacement rate, or a `"demand_rate"` given. The front is the spend
+  against the fleet's availability by marginal analysis, each point (a
+  `SparesAllocation`) with every site's stock of every part, the
+  expected backorders and each base's availability; the allocation is
+  its cheapest point for a target, or its best within a budget. A base's
+  pipeline has its variance by default (a negative binomial);
+  `method="metric"` gives the textbook's Poisson numbers. Every part is
+  taken as needed: a diagram that is not a series system is refused.
+  See the spares guide, "Bases and a depot".
+
+- An upgraded component that keeps the unit in service until its next
+  failure or due replacement (the upgrade's `"replace_in_service":
+  False`) is worked out over a horizon on its own or under age
+  replacement: `point_availability`, `mission_availability`,
+  `expected_events`, `expected_cost` and `expected_npv` no longer
+  refuse it, from new or from a state. Each unit has the life in
+  service when it is put in, on one renewal equation; upgraded to its
+  own life it is the component without its upgrade, to rounding. With
+  block replacement or tests a unit kept is still simulated. No seeded
+  result changes.
+
+- `MarkovComponent(states, rates, up=None, capacity=None, start=None)`:
+  a component given as a continuous-time Markov chain, for one that is
+  not a life and a repair (a degraded state it is restored from, a
+  failure detected or not, standby and running modes). `rates` is
+  `{(from, to): rate}`, `up` the states it works in (or `capacity` a
+  level per state, working where it is above 0) and `start` its state at
+  0 or the probability of each (by default the first state). It gives
+  `state_probabilities`, `steady_state`, `point_availability`,
+  `point_unavailability`, `mean_availability`, `mean_unavailability`,
+  `failure_frequency` and `capacity_distribution`, from the chain
+  followed by uniformization (as the crews' and standby groups' chains
+  are) and its long-run distribution. With a way back from its failed
+  states it is a component of a `RepairableRBD`, given as it is or in a
+  spec with its prices (`"repair_cost"` and `"replace_cost"` per failure,
+  `"downtime_cost"`, `"acquisition_cost"`): its long-run values,
+  importance and long-run capacity exact, its values over time, expected
+  events, costs and capacity over time numerical, from its `start`, the
+  unavailability summed over its failed states; the Python engine
+  simulates it, drawing its times in each state and its next states from
+  streams of new names (so no seeded result of another diagram changes),
+  and the compiled engines hand such a diagram over. Each rate is a
+  lever (`reliability.rate:<from>-><to>`) and an uncertain parameter by
+  name, and it saves with its diagram. Refused, each with what to do:
+  `repair_crews` in its diagram, membership of a common-cause group, a
+  `"repairability"`, maintenance, tests, spares or a maintenance group in
+  its spec, a `NodeState` for it, the first failure's exact values, the
+  spares analyses, and a simulation of a diagram whose capacity comes
+  from its states. With no way back it has a lifetime (`sf`, `ff`, `df`,
+  `hf`, `Hf`, `qf`, `mean`, `random`) and is a node of a
+  `NonRepairableRBD` (its capacities taken by `capacity_distribution`)
+  or the `"reliability"` of a repairable component's spec. See the
+  guide's "Markov components".
+- `FaultTree.to_open_psa` and `FaultTree.from_open_psa` exchange the
+  MGL and alpha-factor common-cause models, and read the phi-factor
+  model. The format takes each specific set's probability `Q_k` as an
+  independent basic event, which is `shocks="independent"`: an `MGL` or
+  `AlphaFactor` of three or more members is written with it (and refused
+  with the default, exclusive shocks, which differ at second order), and
+  read with it. The format's alpha-factor formula is the non-staggered
+  scheme's, so an `alpha-factor` group reads as
+  `AlphaFactor(..., testing="non-staggered")`, and staggered alpha
+  factors are written as the non-staggered ones of the same `Q_k`. A
+  `phi-factor` group reads as the staggered `AlphaFactor` of the same
+  shares where a member's sets add up to its probability, and is refused,
+  naming the sum, where they do not (as when the factors themselves sum
+  to 1). A group splitting the failure rate is still refused, now saying
+  the format has no form for it.
+
+- `PhasedMission` takes repair during its phases (`repairability=`, on
+  the constructor and `from_diagram`: each repaired block's model of its
+  repair times). A repaired block is under repair from the moment it
+  fails and then runs again as good as new, whatever the phase by then,
+  so a phase's diagram can go down and come back: the mission fails at
+  the first instant the diagram of the phase under way is down, and at a
+  phase's start if its diagram is down then (it does not wait for a
+  repair). Exact where every life has a constant failure rate in every
+  phase and every repair is exponential: the mission's Markov chain over
+  the blocks' states, carried through the phases, a phase's down states
+  absorbing, which gives `reliability`, `phase_failure_probabilities`,
+  `reliability_over_time`, `expected_mission_time`, `failure_drivers`,
+  `summary`, the importance measures (a block held working, or failed
+  and never repaired), `parameter_sensitivity` and the levers (a repair
+  model's as `repairability.<name>`); one phase is
+  `RepairableRBD.first_failure_sf`. Other lives and repairs are
+  simulated, each repaired block's lives and repairs drawn as it fails
+  and comes back (`method="simulate"`, `reliability_interval`, `summary`,
+  `compare` with common random numbers), and the exact routes refuse,
+  naming the simulation. At one instant failures come before a phase's
+  start, and restorations after it. A repaired block is working or not
+  needed in each phase, is in no common-cause group, and a mission with
+  repairs takes no block on standby; Fussell-Vesely, Barlow-Proschan and
+  the cut sets refuse such a mission. Missions without repairs play as
+  before, to the last bit. Repair between phases or missions (a
+  turnaround) is not modelled.
+
+- `FaultTree.to_open_psa` and `FaultTree.from_open_psa` exchange trees of
+  repaired and tested events. An event with an exponential life and
+  repair is written as the format's `GLM` (no failure on demand), and a
+  tested one with an exponential life as its `periodic-test`: 4 arguments
+  with an instant repair, 5 with an exponential repair, and 11 for a test
+  that takes a fixed time (the unit off line and not ageing in it, every
+  failure found). The reader takes these forms back as component specs;
+  a `GLM` with a failure on demand, a `periodic-test` whose first test
+  falls past its first interval, and an 11-argument form with a failure
+  in or caused by the test, a unit available in it, a test that can miss
+  a failure or a bad restart are refused, naming what they have. Other
+  lives and repairs, a test time that is not fixed and an inspection's
+  other options are refused by the writer, naming the event;
+  `to_open_psa(t)` writes each repaired event's unavailability at `t`.
+
+- `PhasedMission` takes common-cause groups (`ccf_groups=`, on the
+  constructor and `from_diagram`): a shared cause that strikes in one
+  phase fails its members from then on. A group's model has a life for
+  each cause: one that splits the failure rate (`BetaFactor`, `MGL` or
+  `AlphaFactor` with `basis="rate"`, the members on one surpyval
+  parametric model, each cause's life taken through surpyval's hazard
+  ratio) or `Shocks` at a rate of their own (members of any models); one
+  that splits a failure probability is refused, naming these. Each
+  shared cause is written into the phases' diagrams as a component
+  `("cause", members)` in series with every member it fails, so every
+  analysis takes it: the exact values (its segments in the decision
+  diagram, repeated across its members), the simulation (one life per
+  cause), the importance measures and cut sets (which name the causes; a
+  member's entry is its own failures'), `levers()` and
+  `parameter_sensitivity()` (a group's under the tuple of its members:
+  their model's, then `ccf_beta`, ...), and saving. A phase's diagram
+  with groups of its own is still refused, now naming the mission's
+  argument.
+
+- A `Network`'s links and nodes can be repaired. Give each a component
+  spec (`{"reliability": ..., "repairability": ...}`, as a
+  `RepairableRBD`'s component's) and the network gives the connection's
+  `point_availability(x)` and `point_unavailability(x)` (the latter
+  worked out as itself, so a small one keeps its digits),
+  `mission_availability(t)` and `mission_unavailability(t)`,
+  `mean_availability()` and `mean_unavailability()` in the long run, and
+  how often the connection is lost: `failure_frequency(t)`,
+  `expected_failures(t)` and `system_failure_frequency()`. Each element's
+  curve is a diagram's component's, and the connection follows from the
+  network's own decision diagram, so two terminals, several, all of them
+  and directed links all work; the importance measures made of the
+  elements' probabilities are taken at their availabilities at `x`. What
+  needs a time at which the terminals part for good (`sf`, `mean`, the
+  B-lives, `random`) refuses a repaired network, as do the levers,
+  `parameter_sensitivity`, `tornado` and `to_rbd` for now; an element
+  takes a life and a repair only, every element is repaired or none is,
+  and a repaired network is not simulated. `to_dict` saves the specs;
+  `analysis_routes()` and the capability matrix show the new methods.
+
+- `PhasedMission` saves and loads (`to_dict`, `to_json`, `from_dict`,
+  `from_json`), a mission drawn as one diagram with its blocks' settings
+  and vote counts by phase; and it has the measures the other models
+  have: `differential_importance` and `joint_importance` (components held
+  across every phase, the decision diagram replayed),
+  `barlow_proschan_importance` (each component's part of the rate at
+  which the mission fails within its phases, integrated over the
+  mission's time; a failure at a phase's start takes no part),
+  `expected_mission_time` (the mean time it runs, to its failure or its
+  end: a mission that succeeds has no mean life), and `levers`,
+  `with_levers` and `parameter_sensitivity` (each component's parameters
+  and each phase's duration, by differences of the exact reliability).
+  The importance measures of a mission with blocks on standby, which
+  refused, are worked out from its Markov chain where the chain is (every
+  life at a constant rate), a block held working or failed in it;
+  Fussell-Vesely, the cut sets and Barlow-Proschan still refuse such a
+  mission. There is no structural importance for a mission (a
+  component's state is one per phase). `analysis_routes()`, the
+  capability matrix and the phased missions guide show them.
+
+- `Network.tornado(x)`: the numbers of a tornado chart for a network, as
+  the diagrams and `FaultTree` give them: the exact reliability at `x`
+  with each link's and failing node's parameter at its low and at its
+  high (a given range, or a share of its scale either way), sorted by the
+  swing. It works for two terminals, several, all of them and directed
+  networks; `analysis_routes()` and the capability matrix show it.
+
+- `Network` takes more than two terminals, and directed links.
+  `Network(links, terminals=[...])` is the reliability of several nodes
+  staying connected to each other (K-terminal), and `terminals="all"` of
+  every node (all-terminal): exact, from the same decision diagram, whose
+  states now say which of the frontier's parts hold a terminal (a 10-by-10
+  grid with every node a terminal has 0.8 million states, where corner to
+  corner it has 1.9 million). Every method works for them: the importance
+  measures, the cut sets, the B-lives, the parameter uncertainty, the
+  levers, `compare`, the simulation (a sample lasts until the terminals
+  part) and saving (`to_dict` gains `terminals` and `directed`; an older
+  save still loads). `path_sets()` then lists the trees that join the
+  terminals, up to `MAX_PATHS`, and `network.METHOD = "paths"` refuses
+  more than two terminals. `source` and `target` stay, and two terminals
+  have the plans, values and seeded lifetimes they had.
+  `Network(..., directed=True)` makes each link work from its first node
+  to its second, for two terminals, decided from its simple paths (cycles
+  allowed), and `Network.to_rbd()` gives the `NonRepairableRBD` of a
+  directed network with no cycle. A directed network of more than two
+  terminals is refused, with the reason.
+
 
 - Demand plans for a probability of failing per demand in a
   `RepairableRBD` (a `"reliability"` that is a
@@ -611,6 +836,10 @@ release between minors that only adds (0.19.1).
 
 ### Changed
 
+- `FaultTree.to_open_psa` writes a beta-factor group's factor at the
+  level of the whole group (the number of members), not at 2, as SCRAM
+  requires for a group of three or more; the reader takes either.
+
 - `FaultTree.to_open_psa` keeps the name of a common-cause group's member
   that it makes an identifier, as an attribute of the group
   (`label-<identifier>`), as the format gives a member no label of its
@@ -742,6 +971,13 @@ release between minors that only adds (0.19.1).
 
 ### Fixed
 
+- A surpyval model with a hazard ratio (`hr=`) draws its lifetimes with
+  it in a `NonRepairableRBD`'s and a `PhasedMission`'s simulations
+  (`random`, `method="simulate"`): the batched draws took the
+  distribution's quantile function, without the ratio, so the simulated
+  lives were those of the model at `hr=1` (a Weibull `[100, 2]` at
+  `hr=0.3` drew a mean life of 88.6, not 161.8). Seeded results change
+  for such models only.
 - A `RepairableRBD` with a test or task whose `"duration"` is a number
   saves and loads (`to_dict`): it was refused as a model it could not
   save. The number is saved as it is.
@@ -802,6 +1038,28 @@ release between minors that only adds (0.19.1).
   model's parameters (its baseline's and its coefficients) as its
   distribution's: `model_parameters` gives None for one, as for any model
   it cannot rebuild, rather than a rebuild that fails.
+- A tested unit with an exponential life, whose tests or repairs take
+  time, fails at its rate while it is up, in a `RepairableRBD`'s long-run
+  values and over time: between two points of its grid, its expected
+  failures follow its exposure (the test's and the repair's CDFs exact at
+  any time), where they were linear across the cell, and the long-run
+  values are averaged at three Gauss points a cell, not two. A system's
+  failures with another unit in the same repairs were off by the cell's
+  width squared. Against the Markov chain of two or three voted channels
+  (undetected failures at 2e-5 an hour, tested every 8,760 h, a repair of
+  24 h on average after the test), the relative differences were:
+  `system_failure_frequency` 5.2e-7 (1oo2), 4.6e-8 (2oo2) and 4.6e-7
+  (2oo3), now 1.1e-9, 2.1e-10 and 1.0e-9; the undetected failures' part
+  1.3e-6, 1.2e-7 and 1.2e-6, now the same 1.1e-9 at most;
+  `mean_unavailability` 1.8e-8, 1.6e-9 and 1.3e-8, now 1.7e-9 at most.
+  Over time, `expected_failures` past the first test was 5.2e-7 off and
+  is now within 1e-9 of the long run, and the unit's own availability in
+  a repair, 2.9e-7 off (1.7e-5 in the cell a test of a fixed time ends
+  in), is within 1e-9. So these values of diagrams with such units move
+  by up to about 1e-6 relative (`SafetyFunction.pfh` and `pfd_avg` among
+  them: the guide's worn 2oo3 `pfh()` reads 7.9104e-06, where it read
+  7.9105e-06); a unit with any other life is worked out as before.
+  Seeded and simulated results do not change.
 
 ## [0.20] - 2026-11-22
 

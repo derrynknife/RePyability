@@ -129,7 +129,8 @@ def _require_capacities_given(rbd) -> None:
     if own:
         raise NotImplementedError(
             f"Node(s) {sorted(own, key=str)} take their capacity from "
-            "their models (a DegradingNode's stages, or a nested RBD's "
+            "their models (a DegradingNode's stages, a Markov "
+            "component's states, or a nested RBD's "
             "capacities), which the simulation does not follow. Give "
             "them a capacity, or use capacity_distribution() for the "
             "long run."
@@ -611,7 +612,10 @@ def _upgrade_kind(rbd, node) -> Optional[str]:
     renewal equation on each side of the upgrade, and ``"tests"``, with
     tests, its tests' model on each side (see
     ``_curves._upgraded_curve``); ``"kept"``, the unit in service kept
-    past the upgrade (``replace_in_service`` False), not worked out."""
+    past the upgrade (``replace_in_service`` False): its renewal
+    equation with the life of each unit by when it is put into service,
+    with no task or under age replacement (see
+    ``_require_upgrade_followed``)."""
     upgrade = rbd._upgrades.get(node)
     if upgrade is None:
         return None
@@ -624,19 +628,32 @@ def _upgrade_kind(rbd, node) -> Optional[str]:
     return "plan"
 
 
+def _kept_task(rbd, node) -> Optional[str]:
+    """The task of an upgraded component that keeps the unit in service
+    (see ``_upgrade_kind``): ``"tests"``, ``"age"`` (age replacement),
+    ``"block replacement"``, or None for none."""
+    if node in rbd._inspection:
+        return "tests"
+    schedule = rbd._preventive.get(node)
+    if schedule is None or schedule.times == ():
+        return None
+    return "age" if schedule.policy == "age" else "block replacement"
+
+
 def _require_upgrade_followed(rbd, node) -> None:
     """Raise unless an upgraded component's values over a horizon are
     worked out (see ``_upgrade_kind``): not for a unit kept in service
     past the upgrade, nor with tests other than in no time, repaired in
     no time, finding every failure, on a period of their own."""
     kind = _upgrade_kind(rbd, node)
-    if kind == "kept":
+    if kind == "kept" and _kept_task(rbd, node) not in (None, "age"):
         raise NotImplementedError(
             f"Component {node!r} keeps the unit in service at its upgrade "
             "(replace_in_service False) until its next failure or due "
-            "replacement, whose values over a horizon are not worked out "
-            "yet: estimate them by simulation, with availability() or "
-            "cost() (or npv_distribution())."
+            "replacement, whose values over a horizon are worked out with "
+            "no task or under age replacement, not yet with "
+            f"{_kept_task(rbd, node)}: estimate them by simulation, with "
+            "availability() or cost() (or npv_distribution())."
         )
     if kind != "tests":
         return

@@ -55,6 +55,7 @@ from repyability.utils.checks import is_number, is_whole, number_or_nan
 
 from . import _importance_time
 from ._model_utils import CovariateSpec, UsageSpec, lever_spec
+from .markov_node import MarkovComponent
 
 #: What the sensitivities can be of.
 QUANTITIES = ("availability", "cost_rate")
@@ -365,6 +366,9 @@ def _as_spec(component) -> Optional[dict]:
         return component
     reliability = getattr(component, "reliability", None)
     repair = getattr(component, "time_to_replace", None)
+    if isinstance(component, MarkovComponent):
+        # Its rates are its levers, and it has no repair but its own.
+        return {"reliability": component}
     if reliability is None or repair is None:
         return None
     return {"reliability": reliability, "repairability": repair}
@@ -548,6 +552,166 @@ def _fault_tree_levers(tree) -> List[_Lever]:
     )
 
 
+def _mission_levers(mission) -> List[_Lever]:
+    """Every lever of a phased ``mission``, as its ``parameter_sensitivity``
+    reports them: each component's model's parameters, by their own names
+    (the model replaced in every phase's diagram that uses it, or in the
+    one diagram of a mission drawn so), a common-cause group's under the
+    tuple of its members where its first member comes (its members' one
+    model's, then its own, ``ccf_beta``, ..., as a diagram's), a repaired
+    block's repair model's after its life's, as ``repairability.<name>``,
+    then each phase's duration, under
+    ``None`` as ``phase.<name>.duration``. ``build`` gives the arguments
+    ``PhasedMission._from_args`` takes."""
+    import dataclasses
+
+    from .ccf import CCFGroup, Shocks
+    from .ccf import parameter_bounds as ccf_parameter_bounds
+    from .ccf import parameters as ccf_parameters
+    from .ccf import with_parameters as with_ccf_parameters
+    from .non_repairable_rbd import NonRepairableRBD
+
+    args = mission._init_args
+    drawn = "rbd" in args
+
+    def with_model(rbd, node, model):
+        given = rbd._init_args
+        if node not in given["reliabilities"]:
+            return rbd
+        return NonRepairableRBD(
+            **{
+                **given,
+                "reliabilities": {**given["reliabilities"], node: model},
+            }
+        )
+
+    def build_model(model, node, args) -> dict:
+        if drawn:
+            return {**args, "rbd": with_model(args["rbd"], node, model)}
+        made: Dict[int, Any] = {}
+        phases = []
+        for name, duration, rbd in args["phases"]:
+            if id(rbd) not in made:
+                made[id(rbd)] = with_model(rbd, node, model)
+            phases.append((name, duration, made[id(rbd)]))
+        return {**args, "phases": phases}
+
+    def build_duration(value, j) -> dict:
+        phases = list(args["phases"])
+        if drawn:
+            phases[j] = dataclasses.replace(phases[j], duration=value)
+        else:
+            name, _, rbd = phases[j]
+            phases[j] = (name, value, rbd)
+        return {**args, "phases": phases}
+
+    out: List[_Lever] = []
+    groups = mission.ccf_groups
+    grouped = {
+        member: g for g, group in enumerate(groups) for member in group.members
+    }
+    listed: set = set()
+
+    def group_levers(g: int) -> None:
+        """A group's levers, under the tuple of its members: its
+        members' one model's (each member's own, for shocks at a rate of
+        their own, whose members' models may differ), then its own."""
+        group = groups[g]
+        names = tuple(group.members)
+        shared = not isinstance(group.model, Shocks)
+        for member in names[:1] if shared else names:
+            for name, value, moved, bounds, scale in _model_levers(
+                "", mission._given[member], lambda m: m
+            ):
+
+                def build(v, moved=moved, member=member) -> dict:
+                    made = args
+                    for one in names if shared else (member,):
+                        made = build_model(moved(v), one, made)
+                    return made
+
+                key = names if shared else member
+                out.append(
+                    _Lever(key, name, value, False, build, None, bounds, scale)
+                )
+        for letter, value in ccf_parameters(group.model).items():
+
+            def build_ccf(v, g=g, letter=letter, group=group) -> dict:
+                model = with_ccf_parameters(group.model, {letter: v})
+                changed = list(groups)
+                changed[g] = CCFGroup(group.members, model)
+                return {**args, "ccf_groups": changed}
+
+            out.append(
+                _Lever(
+                    names,
+                    f"ccf_{letter}",
+                    value,
+                    False,
+                    build_ccf,
+                    None,
+                    ccf_parameter_bounds(group.model, letter),
+                    value,
+                )
+            )
+
+    for node, model in mission._given.items():
+        if node in grouped:
+            if grouped[node] not in listed:
+                listed.add(grouped[node])
+                group_levers(grouped[node])
+            continue
+        for name, value, moved, bounds, scale in _model_levers(
+            "", model, lambda m: m
+        ):
+
+            def build(v, moved=moved, node=node) -> dict:
+                return build_model(moved(v), node, args)
+
+            out.append(
+                _Lever(node, name, value, False, build, node, bounds, scale)
+            )
+        if node in mission.repairability:
+            for name, value, moved, bounds, scale in _model_levers(
+                "repairability", mission.repairability[node], lambda m: m
+            ):
+
+                def build_repair(v, moved=moved, node=node) -> dict:
+                    repairs = {**args["repairability"], node: moved(v)}
+                    return {**args, "repairability": repairs}
+
+                out.append(
+                    _Lever(
+                        node,
+                        name,
+                        value,
+                        False,
+                        build_repair,
+                        None,
+                        bounds,
+                        scale,
+                    )
+                )
+    for j, phase in enumerate(mission.phases):
+
+        def build_phase(v, j=j) -> dict:
+            return build_duration(v, j)
+
+        out.append(
+            _Lever(
+                None,
+                f"phase.{phase.name}.duration",
+                phase.duration,
+                False,
+                build_phase,
+                None,
+                (0.0, math.inf),
+                phase.duration,
+            )
+        )
+    return out
+
+
 def _network_levers(net) -> List[_Lever]:
     """Every lever of a ``net``work, as its ``parameter_sensitivity``
     reports them: each link's and failing node's model's parameters, by
@@ -708,15 +872,18 @@ def _shutdown_levers(args: dict) -> List[_Lever]:
 
 
 def _levers_of(rbd) -> List[_Lever]:
-    """``rbd``'s levers, repairable or not, or a fault tree's or a
-    network's."""
+    """``rbd``'s levers, repairable or not, or a fault tree's, a
+    network's or a phased mission's."""
     from repyability.fault_tree import FaultTree
     from repyability.network import Network
 
     from .non_repairable_rbd import NonRepairableRBD
+    from .phased_mission import PhasedMission
 
     if isinstance(rbd, FaultTree):
         return _fault_tree_levers(rbd)
+    if isinstance(rbd, PhasedMission):
+        return _mission_levers(rbd)
     if isinstance(rbd, Network):
         return _network_levers(rbd)
     if isinstance(rbd, NonRepairableRBD):
@@ -1175,8 +1342,12 @@ def _no_lever(rbd, key, name: str, found: dict) -> ValueError:
     keys = list(dict.fromkeys(k for k, _ in found))
     close = _close_name(key, keys)
     hint = "" if close is None else f" Did you mean {close!r}?"
+    from .phased_mission import PhasedMission
+
     if isinstance(rbd, FaultTree):
         holders = "event with a model or common-cause group"
+    elif isinstance(rbd, PhasedMission):
+        holders = "component with a model, or the phases' durations (None)"
     elif isinstance(rbd, Network):
         holders = "link or node with a model"
     elif isinstance(rbd, RepairableRBD):
@@ -1191,9 +1362,20 @@ def _no_lever(rbd, key, name: str, found: dict) -> ValueError:
     )
 
 
+def _construct(rbd, args: dict) -> Any:
+    """A model of ``rbd``'s class built from its constructor's arguments
+    ``args`` (a phased mission's through ``_from_args``, as it may be
+    drawn as one diagram)."""
+    from .phased_mission import PhasedMission
+
+    if isinstance(rbd, PhasedMission):
+        return PhasedMission._from_args(args)
+    return type(rbd)(**args)
+
+
 def with_levers(rbd, values) -> Any:
-    """``RepairableRBD.with_levers`` and ``NonRepairableRBD.with_levers``:
-    see there."""
+    """``RepairableRBD.with_levers``, ``NonRepairableRBD.with_levers`` and
+    the others': see there."""
     if not isinstance(values, Mapping):
         raise TypeError(
             "with_levers takes a dict of new values, by Lever (from "
@@ -1220,7 +1402,7 @@ def with_levers(rbd, values) -> Any:
                 f"whole number, got {value!r}."
             )
         try:
-            changed = type(rbd)(**lever.build(float(value)))
+            changed = _construct(rbd, lever.build(float(value)))
         except (ValueError, TypeError) as error:
             low, high = lever.bounds
             raise ValueError(
@@ -1229,7 +1411,7 @@ def with_levers(rbd, values) -> Any:
             ) from error
     if changed is rbd:
         # A copy, as with no levers changed.
-        changed = type(rbd)(**rbd._init_args)
+        changed = _construct(rbd, rbd._init_args)
     return changed
 
 

@@ -67,8 +67,12 @@ alone = (
   out; it still ages.
 - **Phases.** In order, with distinct names; a phase of no duration needs
   its diagram working at that instant (a check before take-off, say).
-- **Not modelled here.** Repair between or during phases, and
-  common-cause groups, which a phase may not have. A block on standby, a
+- **Common-cause groups** are the mission's, not a phase's: see
+  [below](#common-cause-groups).
+- **Repair during the phases** is the mission's too: see
+  [below](#repair-during-the-phases).
+- **Not modelled here.** Repair between phases or between missions (a
+  turnaround). A block on standby, a
   block that cannot fail in a phase, and a block's life model or
   covariates by phase are set on a mission drawn as
   [one diagram](#one-diagram-each-phase-setting-its-blocks).
@@ -165,9 +169,202 @@ fv["e1"]                        # -> 0.2426
 flight.fussell_vesely(method="rare_event")["e1"]   # -> 0.2426
 ```
 
-`analysis_routes()` reports each analysis as exact, or refused when the
-mission's diagram (for `fussell_vesely`, the cut sets' too) would pass
-`MAX_NODES`, and `reliability_interval` as simulated.
+The other measures the diagrams have hold a component the same way.
+`differential_importance()` shares out the Birnbaum importance (or, with
+`change="proportional"`, the criticality importance) so that the shares
+add up to 1, and a group's share is its members' sum.
+`joint_importance()` holds two components at once: `R(1_i, 1_j) -
+R(1_i, 0_j) - R(0_i, 1_j) + R(0_i, 0_j)`, positive for complements and
+negative for substitutes. Every pair here is close to 1, as any
+component failed from the start ends the flight.
+`barlow_proschan_importance()` is the share of the failures each
+component's own failure causes as it happens: in each phase, the rate at
+which the mission's reliability falls with the component's segment
+(one reverse pass of the decision diagram) times its density, integrated
+over the mission's time. A failure at a phase's start, of a phase that
+needs a component lost earlier, is caused by no failure then and takes no
+part, so the shares are of the failures within the phases: here the
+navigation unit's in the cruise, nearly all of them, while the engines
+lost in the cruise fail the flight only as the landing starts.
+
+```python
+flight.joint_importance()["e1", "nav"]        # -> 0.9990
+bp = flight.barlow_proschan_importance()
+bp["nav"], bp["e1"]                           # -> (0.9592, 0.0203)
+```
+
+There is no structural importance: a component's state is one per
+phase's segment, so "the share of the state vectors in which it is
+critical" has no single meaning for a mission. Nor is there a mean life,
+as a mission that succeeds has no time to failure;
+`expected_mission_time()` is the mean time it runs, to its failure or its
+end, `E[min(T, duration)]`, the reliability over time integrated
+(numerical, to about 1e-9).
+
+```python
+flight.expected_mission_time()   # -> 10.4884 of the 10.5 hours
+```
+
+`levers()` lists the components' parameters and each phase's duration
+(under `None`, as `"phase.<name>.duration"`), `with_levers` builds the
+mission with some moved (a component's model in every phase that uses
+it), and `parameter_sensitivity()` differences the mission's exact
+reliability over each:
+
+```python
+sens = flight.parameter_sensitivity()
+sens["nav"]["failure_rate"]                   # -> -10.16
+sens[None]["phase.cruise.duration"]           # -> -0.000456
+longer = flight.with_levers({(None, "phase.cruise.duration"): 12.0})
+```
+
+`analysis_routes()` reports each analysis as exact or numerical, or
+refused when the mission's diagram (for `fussell_vesely`, the cut sets'
+too) would pass `MAX_NODES`, and `reliability_interval` as simulated.
+
+## Common-cause groups
+
+Redundant units that share a cause (a common supply, one maintenance
+error) fail together, and in a mission a cause that strikes in one phase
+has failed its members for every later one. `ccf_groups` gives the
+mission its groups, as a diagram takes them, with a model that has a
+life for each cause:
+
+- one that splits the members' failure *rate*
+  (`BetaFactor(beta, basis="rate")`, or an `MGL` or `AlphaFactor` so):
+  each cause takes a share of the members' cumulative hazard, so a member
+  keeps its life, of any shape (the members carry one surpyval
+  parametric model, new together);
+- `Shocks(rate, p, lethal_rate)`: shocks at a rate of their own,
+  whatever the members' ages and models.
+
+A model that splits a failure *probability* (the default basis) is
+refused: a probability has no time in it for the phases to run through.
+
+```python
+from repyability import BetaFactor, CCFGroup
+
+shared = PhasedMission(
+    [
+        ("take-off", 0.2, both_engines),
+        ("cruise", 10.0, either_engine),
+        ("landing", 0.3, both_engines),
+    ],
+    ccf_groups=[CCFGroup(["e1", "e2"], BetaFactor(0.1, basis="rate"))],
+)
+shared.unreliability()                            # -> 0.003867
+shared.phase_failure_probabilities()["cruise"]    # -> 0.002130
+shared.phase_failure_probabilities()["landing"]   # -> 0.001730
+```
+
+A tenth of each engine's failures now take the other with it, which the
+cruise does not survive: its risk rises (from 0.002039). The take-off and
+the landing need both engines anyway, and there a shared failure is one
+failure where two separate ones had two chances: splitting the rate
+keeps each engine's own life, so the pair's first failure comes a little
+later, and the landing's risk falls (from 0.001917).
+
+Each shared cause is written into the phases' diagrams as a component of
+its own, in series with every member it fails, and named `("cause",
+members)` (`"cause 1"`, `"cause 2"`, ... with several groups): one more
+chain of segments in the decision diagram, repeated across its members,
+so the values stay exact, and one more life per simulated mission. The
+measures name it, and a member's own entry is that of its own failures:
+
+```python
+worth = shared.birnbaum_importance()
+list(worth)        # -> ['e1', 'gear', ('cause', ('e1', 'e2')), 'e2', 'nav']
+```
+
+`levers()` lists a group's levers under the tuple of its members: their
+one model's parameters, then the group's own (`ccf_beta`, ...), as a
+diagram's do. On a mission drawn as
+[one diagram](#one-diagram-each-phase-setting-its-blocks),
+`from_diagram(rbd, phases, ccf_groups=...)` takes the groups too; a
+member is working or not needed in each phase, on its node's model.
+
+## Repair during the phases
+
+A crew that restores a failed unit while the mission runs changes what a
+phase asks: its diagram can go down and come back, so the mission fails
+at the *first instant* the diagram of the phase under way is down, not at
+the phase's end. `repairability` names the blocks that are repaired, each
+with a model of its repair times:
+
+```python
+generator = surv.Exponential.from_params([0.002])
+sets = {"g1": generator, "g2": generator}
+either = NonRepairableRBD(
+    [("s", "g1"), ("s", "g2"), ("g1", "t"), ("g2", "t")], sets
+)
+both = NonRepairableRBD([("s", "g1"), ("g1", "g2"), ("g2", "t")], sets)
+phases = [("transit", 72.0, either), ("lift", 6.0, both), ("return", 72.0, either)]
+
+PhasedMission(phases).unreliability()             # -> 0.2812
+fix = surv.Exponential.from_params([0.125])       # eight hours, on average
+crewed = PhasedMission(phases, repairability={"g1": fix, "g2": fix})
+crewed.unreliability()                            # -> 0.06095
+crewed.phase_failure_probabilities()["lift"]      # -> 0.05333
+```
+
+Without repair a generator lost in the transit fails the lift, which
+needs both: a quarter of the missions. With a crew most of those
+generators are back in time.
+
+- **A repaired block** is under repair from the moment it fails, for a
+  time drawn from its model, and then runs again as good as new, on a new
+  life from its own model, whatever phase the mission is in by then (a
+  repair goes on through the phases' boundaries). Each is repaired on
+  its own: there is no crew to wait for. The other blocks fail once.
+- **A phase that starts with its diagram down fails the mission** there:
+  the mission does not wait for a repair. Most of the `lift`'s risk above
+  is a generator still under repair when the lift begins.
+- **At one instant**, failures come first, then a phase's start (its
+  diagram read as the blocks then stand), then restorations: a block
+  back exactly as a phase that needs it begins is back too late.
+- **Exact** where every life has a constant failure rate in every phase
+  and every repair time is exponential: a Markov chain over the blocks'
+  states (running or failed), carried through the phases, the states a
+  phase's diagram is down in absorbing, up to
+  `repyability.rbd._mission_chain.MAX_STATES` states in a phase. The
+  importance measures hold a block in that chain (working throughout, or
+  failed from the start and never repaired), and `failure_drivers`,
+  `reliability_over_time`, `expected_mission_time`, `summary`, the
+  levers (a repair model's as `repairability.<name>`) and saving take
+  the repairs. Fussell-Vesely, Barlow-Proschan and the cut sets refuse,
+  as for a mission with a block on standby.
+- **Simulated** otherwise (wear-out lives, repairs of any other shape):
+  each repaired block's lives and repairs drawn as it fails and comes
+  back. `analysis_routes()` says which.
+
+```python
+mended = surv.LogNormal.from_params([1.8, 0.6])
+shop = PhasedMission(phases, repairability={"g1": mended, "g2": mended})
+shop.analysis_routes()["reliability"].route       # -> 'refused'
+played = shop.reliability_interval(200_000, seed=1)
+1 - played.estimate                               # -> 0.05844
+```
+
+One phase of a mission with repairs is a repairable diagram's first
+failure: `RepairableRBD.first_failure_sf`. A repaired block is working
+or not needed in each phase, on its node's model, is in no common-cause
+group, and a mission with repairs takes no block on standby.
+
+## Saving and loading
+
+A mission saves as the diagrams do: `to_dict()` and `to_json()` (to a
+string, or a file given a path), loaded by `PhasedMission.from_dict` and
+`from_json`. A mission built from a diagram per phase keeps each phase's
+name, duration and diagram; one drawn as
+[one diagram](#one-diagram-each-phase-setting-its-blocks) keeps the
+diagram once and each phase's name, duration, blocks' settings (their
+states, covariates, models, start probabilities and dormancy) and vote
+counts. Loading builds the mission again, so it is checked again.
+
+```python
+text = flight.to_json()
+PhasedMission.from_json(text).unreliability() == flight.unreliability()   # -> True
+```
 
 ## One diagram, each phase setting its blocks
 
@@ -282,9 +479,17 @@ no longer independent, and the mission is not a product over phases:
   other). `reliability()` then refuses (pointing to `method="simulate"`
   and `reliability_interval`).
 
-The importance measures and cut sets refuse a mission with a block on
-standby either way (pointing to `failure_drivers`), and
-`analysis_routes()` says which analysis is which, and why.
+With the chain, the importance measures (Birnbaum, improvement
+potential, the risk worths, criticality, differential and joint) hold a
+block in it: working, it never fails and its switch never fails (on
+standby it still idles until called on), and failed, it is failed from
+the start; the parameter sensitivities difference the chain's
+reliability. Simulated, they refuse (pointing to `failure_drivers`,
+which plays the missions again with each block never failing). The cut
+sets, Fussell-Vesely and Barlow-Proschan importance refuse a mission with
+a block on standby either way, a spare's failure mattering only once it
+is called on, and `analysis_routes()` says which analysis is which, and
+why.
 
 ### A different life in one phase
 
@@ -453,6 +658,6 @@ played = pumping.summary(method="simulate", mc_samples=50_000, seed=1,
 played.interval.lower <= result.reliability <= played.interval.upper   # -> True
 ```
 
-**Not modelled yet.** A switch that takes time (see above); repair;
-common-cause groups. Exact values with a standby block and a life whose
+**Not modelled yet.** A switch that takes time (see above); repair of a
+mission with a block on standby. Exact values with a standby block and a life whose
 rate is not constant are not worked out: such a mission is simulated.

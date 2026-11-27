@@ -1118,8 +1118,18 @@ the pair is up 0.9910.)
   cycle by quadrature, to about 1e-10, for Weibull wear-out lives as for
   any: Weibull(1,000 h, 2.5) lives and Weibull(300 h, 1.5) repairs give
   0.98830, and 400 runs of 1,000,000 h 0.98834 (+0.4 standard errors).
-  Warm spares, a switch that can fail, more units, both repaired at once and
-  values over time are simulated, for now.
+  With both units repaired at once (a crew each, the default) the pair is
+  not afresh after a down period: the unit still under repair is some way
+  into it. Each time a unit starts to operate, what follows depends only
+  on how long the other's repair has run, so the pair is a Markov renewal
+  process on that time, and its equation is solved on a grid, halved
+  until two solutions agree to 1e-8. The same lives and repairs give
+  0.991724 (down 0.0083 of the time against 0.0117 with one crew), and
+  400 runs of 1,000,000 h 0.991722 (0.0 standard errors). A pair under
+  repair nearly all the time (lives a small fraction of the repairs) may
+  warn that the grid did not settle, or be refused.
+  Warm spares, a switch that can fail, more units and values over time are
+  simulated, for now.
 - **Simulation.** `availability`, `cost` and `compare` simulate groups
   whatever their units' models, in Python.
 
@@ -1209,6 +1219,109 @@ exact from its chain; with others it is simulated, in Python, with its units
 drawn out as the simulation's exact twin (see
 [an exact twin](simulation.md#an-exact-twin)), which then gives the exact values over
 a window.
+
+## Markov components
+
+Some components are not a life and a repair: a pump that degrades and
+can be restored before it fails, a failure that is detected or not, a
+unit that stands by and runs. Where you know the states and the rates
+between them, give them as a
+[`MarkovComponent`](../api/nodes.md#repyability.MarkovComponent): the
+states, the rate of each transition, and the states it works in (`up`)
+or each state's capacity. It is a component like any other, independent
+of the rest of the diagram.
+
+```python
+from repyability import MarkovComponent
+
+pump = MarkovComponent(
+    ["working", "degraded", "failed"],
+    {
+        ("working", "degraded"): 0.01,   # it degrades
+        ("degraded", "working"): 0.2,    # is restored in time,
+        ("degraded", "failed"): 0.05,    # or fails
+        ("failed", "working"): 0.5,      # and is repaired
+    },
+    up=["working", "degraded"],
+)
+pump.mean_availability()                 # -> 0.99617
+pump.failure_frequency()                 # -> 0.0019157   failures per hour
+
+valve = {"reliability": surv.Exponential.from_params([0.002]),
+         "repairability": surv.Exponential.from_params([0.5])}
+line = RepairableRBD(
+    [("s", "pump"), ("pump", "valve"), ("valve", "t")],
+    {"pump": pump, "valve": valve},
+)
+line.mean_availability()                 # -> 0.9922
+line.mission_availability(100.0)         # -> 0.9925   over the first 100 hours
+line.expected_failures(100.0)            # -> 0.382
+```
+
+Its long-run values come from the chain's long-run distribution
+(exact), and its values over time from the chain followed from its start
+by uniformization, as the standby groups' and repair crews' chains are;
+the unavailability is summed over the failed states, so a small one
+keeps its digits. The simulations (in Python) draw its time in each
+state and its next state from streams of its own, so adding one to a
+diagram changes no other component's draws.
+
+It starts in its first state; `start=` gives another, or the probability
+of each (`start={"degraded": 0.5, "failed": 0.5}`), for the values over
+time and the simulations. Costs go in a spec around it, per failure (a
+move from a working state to a failed one) and per unit of its down
+time: `{"reliability": pump, "repair_cost": 5.0, "downtime_cost": 2.0}`.
+Each rate is a lever, named `reliability.rate:<from>-><to>`, for
+`parameter_sensitivity`, `tornado` and `with_levers`, and an uncertain
+parameter by the same name (`{"pump": {"reliability":
+{"rate:failed->working": <its distribution>}}}`).
+
+With a capacity in each state in place of `up`, it works in the states
+with a capacity above 0, and the capacity analyses take each state's
+level:
+
+```python
+pump = MarkovComponent(
+    pump.states, pump.rates,
+    capacity={"working": 100, "degraded": 60, "failed": 0},
+)
+line = RepairableRBD(
+    [("s", "pump"), ("pump", "valve"), ("valve", "t")],
+    {"pump": pump, "valve": valve},
+)
+shares = line.capacity_distribution()
+shares.levels.tolist()                   # -> [0.0, 60.0, 100.0]
+shares.probabilities[1]                  # -> 0.03816   the time at 60
+```
+
+`point_capacity` and `mission_capacity` follow the states over time. The
+simulations do not follow a capacity that comes from a model (as for a
+`DegradingNode`), so `availability()` refuses such a diagram: give the
+node a capacity in the diagram's `capacity=` to simulate it at one
+level.
+
+A Markov component is restored by its own transitions, so it takes no
+`"repairability"`, maintenance, tests, spares or maintenance group (write
+them as states and rates), is no member of a common-cause group, and a
+diagram with one takes no `repair_crews` (put the components that share
+crews in a nested `RepairableRBD`). The first failure's exact values and
+the spares analyses refuse a diagram with one, and `analysis_routes()`
+says how everything else is worked out.
+
+A chain with no way back from its failed states has a lifetime instead:
+`sf`, `ff`, `df`, `mean`, `qf` and `random`, as any life has. It is then
+a node of a `NonRepairableRBD`, or the `"reliability"` of a spec with
+repair times of its own:
+
+```python
+wear = MarkovComponent(
+    ["new", "worn", "failed"],
+    {("new", "worn"): 0.5, ("worn", "failed"): 0.5},
+    up=["new", "worn"],
+)
+wear.mean()                              # -> 4.0   an Erlang life of two stages
+float(wear.sf(4.0))                      # -> 0.406   3 exp(-2)
+```
 
 ## Imperfect repair
 

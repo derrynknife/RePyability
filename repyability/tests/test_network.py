@@ -904,6 +904,7 @@ CALLS = {
             "df",
             "hf",
             "parameter_sensitivity",
+            "tornado",
             "birnbaum_importance",
             "improvement_potential",
             "risk_achievement_worth",
@@ -940,6 +941,21 @@ CALLS = {
             0.5, {"a": [W([90, 2])]}, n_draws=2, seed=1
         )
     ),
+    # A network of repaired elements' own (see test_network_repaired.py).
+    **{
+        name: (lambda name: lambda net: getattr(net, name)(10.0))(name)
+        for name in (
+            "point_availability",
+            "point_unavailability",
+            "mission_availability",
+            "mission_unavailability",
+            "failure_frequency",
+            "expected_failures",
+        )
+    },
+    "mean_availability": lambda net: net.mean_availability(),
+    "mean_unavailability": lambda net: net.mean_unavailability(),
+    "system_failure_frequency": lambda net: net.system_failure_frequency(),
 }
 
 
@@ -959,6 +975,7 @@ def test_the_routes_say_how_each_analysis_is_worked_out(monkeypatch):
         "levers",
         "to_dict",
         "to_json",
+        "to_rbd",
         "with_levers",
     }
     assert report["sf"].route == report["fussell_vesely"].route == "exact"
@@ -989,6 +1006,10 @@ def test_the_routes_say_how_each_analysis_is_worked_out(monkeypatch):
             CALLS[name](large)
             continue
         assert route.route == "refused", name
+        if name in network_module._REPAIRED_OWN:
+            # Refused whatever the size: the links are not repaired.
+            assert "repaired elements" in route.reason
+            continue
         assert "method='simulate'" in route.reason
         with pytest.raises(NotImplementedError) as error:
             CALLS[name](large)

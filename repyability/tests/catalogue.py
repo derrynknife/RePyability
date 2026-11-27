@@ -23,6 +23,7 @@ from repyability import (
     FaultTree,
     JointNode,
     LoadSharingModel,
+    MarkovComponent,
     NonRepairable,
     NonRepairableRBD,
     Opportunities,
@@ -290,6 +291,37 @@ def mixture_life():
     return mix
 
 
+def markov_unit(capacity=None, start=None):
+    """A Markov component: a unit that degrades, is restored from its
+    degraded state or fails from it, and is repaired from failure."""
+    return MarkovComponent(
+        ["working", "degraded", "failed"],
+        {
+            ("working", "degraded"): 0.01,
+            ("degraded", "working"): 0.2,
+            ("degraded", "failed"): 0.05,
+            ("failed", "working"): 0.5,
+        },
+        up=None if capacity else ["working", "degraded"],
+        capacity=capacity,
+        start=start,
+    )
+
+
+def markov_life():
+    """A Markov component with no way back from its failed state: a
+    life."""
+    return MarkovComponent(
+        ["working", "degraded", "failed"],
+        {
+            ("working", "degraded"): 0.01,
+            ("degraded", "working"): 0.02,
+            ("degraded", "failed"): 0.05,
+        },
+        up=["working", "degraded"],
+    )
+
+
 def too_meshed(build):
     """``build()``, its core given up on as too meshed to work out (see
     ``modular.GraphStructure``), as a far larger one would be (#172)."""
@@ -311,6 +343,9 @@ def nonrepairable_kinds():
         "convolved standby": NonRepairableRBD(
             EDGES, {"a": StandbyModel([unit, unit]), **rest}
         ),
+        # A life given as a Markov chain: it degrades, is restored from
+        # its degraded state or fails from it, and stays failed.
+        "Markov life": NonRepairableRBD(EDGES, {"a": markov_life(), **rest}),
         "simulated standby": NonRepairableRBD(
             EDGES,
             {
@@ -472,7 +507,11 @@ def mission_kinds():
     phase's vote count (exact), on a phase's own model (exact, and with a
     block on standby), with a block on standby (simulated), and with
     blocks on standby, warm and switching imperfectly, every life of a
-    constant rate (exact, by the Markov chain)."""
+    constant rate (exact, by the Markov chain), and with a common-cause
+    group that splits its members' failure rate, and one of shocks at a
+    rate of their own (exact, each cause a component), and with blocks
+    repaired during the phases (exact by the chain where every life and
+    repair is exponential, else simulated)."""
     from repyability import BlockSetting, MissionPhase, PhasedMission
 
     unit = W([100, 2])
@@ -545,7 +584,26 @@ def mission_kinds():
             k={"v": 1},
         ),
     ]
+    plain = [
+        MissionPhase("up", 20.0, k={"v": 3}),
+        MissionPhase("on", 30.0, blocks={"c": "not_needed"}),
+    ]
+    repairs = {"a": E([0.5]), "c": E([0.2])}
     return {
+        "repair_exact": PhasedMission.from_diagram(
+            constant, plain, repairability=repairs
+        ),
+        "repair": PhasedMission.from_diagram(
+            vote, plain, repairability={"a": W([3.0, 1.5])}
+        ),
+        "common_cause": PhasedMission.from_diagram(
+            vote,
+            plain,
+            ccf_groups=CCFGroup(["a", "b"], BetaFactor(0.1, basis="rate")),
+        ),
+        "shocks": PhasedMission.from_diagram(
+            vote, plain, ccf_groups=CCFGroup(["a", "c"], Shocks(0.002, 0.5))
+        ),
         "standby_exact": PhasedMission.from_diagram(constant, chain),
         "settings": PhasedMission.from_diagram(vote, settings),
         "standby": PhasedMission.from_diagram(vote, standby),
@@ -869,7 +927,8 @@ def repairable_kinds():
                 ),
             ),
             # Upgraded, the unit in service kept until it fails or is
-            # due: simulated.
+            # due: each unit with the life in service when it is put in,
+            # over a horizon.
             "upgraded at a time, the unit in service kept": system(
                 unit(
                     preventive={"interval": 200.0, "cost": 3.0},
@@ -1297,6 +1356,30 @@ def repairable_kinds():
                 },
                 capacity={"b": 100.0, "c": 100.0},
             ),
+            # A component given as a Markov chain: working, degraded
+            # (restored, or failing) and failed (repaired), priced.
+            "Markov component": system(
+                {
+                    "reliability": markov_unit(),
+                    "repair_cost": 5.0,
+                    "downtime_cost": 2.0,
+                },
+                downtime_cost_rate=3.0,
+            ),
+            # One with a capacity in each state, started in its
+            # degraded state or its failed one.
+            "Markov component, capacities": system(
+                markov_unit(
+                    capacity={"working": 100.0, "degraded": 60.0, "failed": 0},
+                    start={"degraded": 0.5, "failed": 0.5},
+                ),
+                capacity={"b": 100.0, "c": 150.0},
+            ),
+            # A life given as a Markov chain, repaired at a model's
+            # times: a plain unit of that life.
+            "Markov life, repaired": system(
+                unit(reliability=markov_life(), repair_cost=2.0)
+            ),
             "one repair crew": system(
                 unit(priority=1), repair_crews=1, downtime_cost_rate=5.0
             ),
@@ -1343,6 +1426,18 @@ def repairable_kinds():
                     }
                 },
                 repair_crews=1,
+                downtime_cost_rate=5.0,
+            ),
+            "cold standby pair, Weibull, a crew each": RepairableRBD(
+                [("s", "a"), ("a", "t")],
+                {
+                    "a": {
+                        "reliability": W([1000.0, 2.5]),
+                        "repairability": W([300.0, 1.5]),
+                        "standby": {"units": 2, "k": 1},
+                        "repair_cost": 3.0,
+                    }
+                },
                 downtime_cost_rate=5.0,
             ),
             "common cause, tested": RepairableRBD(

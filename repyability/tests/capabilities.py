@@ -78,6 +78,10 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
                 ("phase_failure_probabilities",),
             ),
             ("Reliability over a mission's time", ("reliability_over_time",)),
+            (
+                "Expected time a mission runs (to failure or its end)",
+                ("expected_mission_time",),
+            ),
             ("A mission's results from one run", ("summary",)),
         ],
     ),
@@ -181,6 +185,10 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
                 ("maintenance_effect",),
             ),
             ("Spares demand and stock", ("spares_demand", "spares_stock")),
+            (
+                "Repairable spares over bases and a depot",
+                ("spares_front", "spares_allocation"),
+            ),
         ],
     ),
     (
@@ -501,6 +509,7 @@ NODES: Dict[str, List[Tuple[str, str]]] = {
         ("A fitted degradation process", "degradation process"),
         ("Cold standby (convolved)", "convolved standby"),
         ("Standby with no reliability of its own", "simulated standby"),
+        ("A Markov component with a lifetime", "Markov life"),
         ("Load sharing", "load sharing"),
         ("A repeated node", "repeated"),
         ("A repeated standby node", "repeated standby"),
@@ -563,6 +572,11 @@ NODES: Dict[str, List[Tuple[str, str]]] = {
         ),
         ("Limited repair crews", "one repair crew"),
         ("A standby group", "standby group"),
+        ("A Markov component (states and rates)", "Markov component"),
+        (
+            "A Markov component with a capacity in each state",
+            "Markov component, capacities",
+        ),
         ("A beta-factor group, revealed failures", "common cause, revealed"),
         ("A beta-factor group, tested", "common cause, tested"),
         (
