@@ -427,9 +427,11 @@ class RepairableRBD(RBD):
           that its failures are an exponential life of rate the demand
           rate times the probability, which every analysis takes. Its
           levers are the probability and the rate; a probability of 0
-          makes it a junction. A life that wears out cannot take one:
-          draw the demand mode as a component of its own, in series
-          (see the guide's "Failing on demand"). In its place,
+          makes it a junction. A life that wears out takes its demand
+          mode as ``"demand"``, a dict of the ``"probability"`` and the
+          demands' ``"rate"``: the two compete and are renewed together,
+          the unit's hazard the life's plus the rate times the
+          probability (see the guide's "Failing on demand"). In its place,
           ``"demand_times"`` calls the unit on at set times (its life
           ends only at one; exact over a window, simulated, the long
           run refused), and ``"demand_plan"`` at a rate that changes
