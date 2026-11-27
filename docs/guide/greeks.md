@@ -191,7 +191,7 @@ a window, `quantity="cost_rate"` the cost rate. The rows carry each
 lever's low and high, the values there and the swing, and `to_dict()`
 gives them as plain data for a chart. `NonRepairableRBD.tornado(x)` does
 the same for the reliability at `x`, as `Network.tornado(x)` does for a
-network's, and `FaultTree.tornado(t)` for the top event probability.
+network's (its availability, for repaired elements), and `FaultTree.tornado(t)` for the top event probability.
 
 ### DIM: shares of a change
 

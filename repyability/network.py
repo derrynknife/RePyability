@@ -76,6 +76,7 @@ the flow.
 import dataclasses
 import functools
 import json
+import math
 import types
 from collections import deque
 from typing import (
@@ -247,6 +248,10 @@ _REPAIRED_GIVES = _REPAIRED_OWN | frozenset(
         "to_dict",
         "to_json",
         "to_rbd",
+        "levers",
+        "with_levers",
+        "parameter_sensitivity",
+        "tornado",
         "capacity_distribution",
         "point_capacity",
         "mission_capacity",
@@ -2183,7 +2188,7 @@ class Network:
         )
 
     def parameter_sensitivity(
-        self, x=None, rel_step: float = 1e-5
+        self, x=None, rel_step: Optional[float] = None
     ) -> Dict[Hashable, Dict[str, Any]]:
         """The sensitivity of the probability that the terminals are joined
         (``sf``) to each parameter of the links' and nodes' models.
@@ -2207,13 +2212,27 @@ class Network:
         [`with_levers`][repyability.Network.with_levers] builds the network
         with them moved.
 
+        A network of repaired elements gives the sensitivity of its
+        availability at ``x`` (``point_availability``), or in the long run
+        with ``x`` left out (``mean_availability``), to each lever of its
+        elements' specs (their lives', repairs' and tests' parameters,
+        named as a diagram's component's, ``"reliability.failure_rate"``,
+        ...): a central difference of the network's unavailability, the
+        network rebuilt with the lever moved (as ``with_levers`` builds
+        it), negated. As the element's curve alone moves, it is its
+        Birnbaum importance times its own availability's change, as
+        [`RepairableRBD.parameter_sensitivity`][repyability.RepairableRBD.parameter_sensitivity]
+        gives a diagram's.
+
         Parameters
         ----------
         x : float or array_like, optional
             The time/s; may be left out if every model is a fixed
-            probability.
+            probability, or for a repaired network's long run.
         rel_step : float, optional
-            The relative step of the differences, by default 1e-5.
+            The relative step of the differences, by default 1e-5; for a
+            repaired network's values over time, whose curves are
+            numerical (to about 1e-7), 1e-2.
 
         Returns
         -------
@@ -2248,6 +2267,10 @@ class Network:
         from repyability.rbd._model_utils import lever_spec
         from repyability.rbd.non_repairable_rbd import _dsf_dparam
 
+        if self.is_repairable:
+            return self._repaired_sensitivity(x, rel_step)
+        if rel_step is None:
+            rel_step = 1e-5
         times, scalar = _times(self, x)
         birnbaum = self._birnbaum(times)
         out: Dict[Hashable, Dict[str, Any]] = {}
@@ -2264,6 +2287,56 @@ class Network:
                 parameter: float(value[0]) if scalar else value
                 for parameter, value in values.items()
             }
+        return out
+
+    def _repaired_value(self, x) -> np.ndarray:
+        """The availability of a repaired network at times ``x`` (a row),
+        or in the long run for ``x`` None, as a row."""
+        if x is None:
+            return np.atleast_1d(self.mean_availability())
+        return np.atleast_1d(self.point_availability(x))
+
+    def _repaired_sensitivity(self, x, rel_step: Optional[float]) -> dict:
+        """``parameter_sensitivity`` of a network of repaired elements:
+        see there."""
+        from repyability.rbd import _sensitivity
+
+        if x is None:
+            self._refuse_unrepaired("mean_availability")
+            times, shape = None, ()
+        else:
+            times, shape = self._repaired_times(x, "parameter_sensitivity")
+        if rel_step is None:
+            rel_step = 1e-5 if x is None else 1e-2
+        if not (
+            is_number(rel_step)
+            and math.isfinite(rel_step)
+            and 0.0 < rel_step < 0.5
+        ):
+            raise ValueError(
+                f"rel_step must be a number in (0, 0.5), got {rel_step!r}."
+            )
+
+        def down(net) -> np.ndarray:
+            if times is None:
+                return np.atleast_1d(net.mean_unavailability())
+            return np.atleast_1d(net.point_unavailability(times))
+
+        base = down(self)
+        out: Dict[Hashable, Dict[str, Any]] = {}
+        for lever in _sensitivity._network_levers(self):
+
+            def at(value, lever=lever):
+                try:
+                    changed = _sensitivity._built(self, lever, value)
+                except ValueError:
+                    return None
+                return down(changed)
+
+            change = -_sensitivity._difference(at, lever, rel_step, base)
+            out.setdefault(lever.key, {})[lever.name] = (
+                float(change[0]) if shape == () else change.reshape(shape)
+            )
         return out
 
     def levers(self) -> List["Lever"]:
@@ -2355,7 +2428,7 @@ class Network:
         self,
         x: Optional[float] = None,
         *,
-        quantity: str = "reliability",
+        quantity: Optional[str] = None,
         ranges: Optional[dict] = None,
         relative: float = 0.1,
     ) -> "TornadoResult":
@@ -2383,7 +2456,11 @@ class Network:
             One time. May be left out only if every model is a fixed
             probability.
         quantity : str, optional
-            ``"reliability"``, the one quantity.
+            ``"reliability"`` (``sf``), the default; for a network of
+            repaired elements ``"availability"``, its default: the point
+            availability at ``x``, or with ``x`` left out the long-run
+            availability (``mean_availability``), each end's network
+            rebuilt with its elements' specs' levers moved.
         ranges : dict, optional
             ``{lever: (low, high)}``, each lever by its
             [`Lever`][repyability.Lever] (from ``levers()``) or its
@@ -2432,14 +2509,24 @@ class Network:
         """
         from repyability.rbd import _sensitivity
 
-        one_of("quantity", quantity, ("reliability",))
+        if quantity is None:
+            quantity = "availability" if self.is_repairable else "reliability"
+        one_of("quantity", quantity, ("reliability", "availability"))
         if x is not None and (np.ndim(x) != 0 or not is_number(x)):
             raise ValueError(
                 "tornado takes one time x (its rows are sorted by the swing "
                 f"there), got {x!r}: call it once for each time."
             )
+        if quantity == "availability":
+            self._refuse_repaired("point_availability")
+            if x is None:
+                self._refuse_unrepaired("mean_availability")
+        elif self.is_repairable:
+            self._refuse_repaired("sf")
 
         def evaluate(net) -> float:
+            if quantity == "availability":
+                return float(net._repaired_value(x)[0])
             return float(np.ravel(net.sf(x))[0])
 
         return _sensitivity._tornado(
@@ -5076,6 +5163,18 @@ class Network:
             r.NUMERICAL,
             "The point unavailability integrated over the window, on "
             "pieces between the elements' curves' bends, to its own size.",
+        )
+        out["parameter_sensitivity"] = built(
+            r.NUMERICAL,
+            "Central differences of the network's unavailability at x (or "
+            "in the long run), the network rebuilt with each lever of its "
+            "elements' specs moved.",
+        )
+        out["tornado"] = built(
+            r.EXACT,
+            "The network's availability at x (or in the long run) with "
+            "each lever of its elements' specs at its low and at its high, "
+            "the network rebuilt.",
         )
         no_long_run = r.refusal(
             functools.partial(self._refuse_unrepaired, "mean_availability")
