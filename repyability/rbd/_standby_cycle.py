@@ -64,6 +64,18 @@ repair far shorter than a step costs nothing. The error falls as the
 square of the step, so the values on two grids, one of half the other's
 step, are extrapolated at the coarser one's points (to about 1e-9 at
 them; the curve is linear between them).
+
+With a switch that can fail the pair has two states it starts afresh in
+(see above), ``A``, a unit starting to operate as the other starts its
+repair, and ``S``, one starting with the other ready, which is where it
+is at 0. From ``S`` the unit's life ends with the switch working (``A``,
+at ``X``) or not (down for a repair, then ``S``, at ``X + R``); from
+``A`` the cycle ends in ``A`` at ``R`` if the repair outlasts the life,
+and otherwise at ``X`` with the other unit ready, as from ``S``. So the
+two states' renewal measures solve a pair of renewal equations, whose
+power series are inverted together, and the pair is down at ``t`` with
+each state's measure against the down periods that follow it: a cycle's
+own, and the repair after each failed switch.
 """
 
 import math
@@ -326,10 +338,11 @@ def steady(values: StandbyLongRun) -> PairCurve:
     )
 
 
-def _on_grid(life, repair, splits, step: float, n: int):
+def _on_grid(life, repair, splits, step: float, n: int, switching: float):
     """The pair's probability of being down at each point of the grid of
     ``n`` steps of ``step``, and its expected failures and its units'
-    before each (see the module's notes)."""
+    before each (see the module's notes), its switch working with
+    probability ``switching``."""
     t = step * np.arange(n + 1)
     convolve = _grid._Spectra(n + 1).convolve
 
@@ -365,6 +378,10 @@ def _on_grid(life, repair, splits, step: float, n: int):
     has = mass > 0.0
     position[has] = (mean[has] / mass[has] - t[:-1][has]) / step
     failing = _grid._lattice(0.0, mass, np.clip(position, 0.0, 1.0))
+    if switching < 1.0:
+        return _two_states(
+            convolve, t, splits, repair, cycle, first, failing, hat, switching
+        )
     one_minus = -cycle
     one_minus[0] += 1.0
     starts = convolve(first, _grid._series_inverse(one_minus, n + 1))
@@ -375,13 +392,65 @@ def _on_grid(life, repair, splits, step: float, n: int):
     )
 
 
-def over_time(life, repair, step: float, n: int) -> PairCurve:
+def _two_states(
+    convolve, t, splits, repair, cycle, first, failing, hat, switching: float
+):
+    """``_on_grid`` for a switch that can fail (see the module's notes):
+    from the measures on the grid of a cycle's end ``cycle``, a life's
+    ``first``, and a life's end with the other unit still under repair
+    ``failing``, and the weights ``hat`` of a cycle's down period."""
+
+    def survives(x):
+        return _values(repair, x, "sf")
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        repaired = _grid._lattice(
+            *_grid._cells(lambda x: _values(repair, x, "ff"), t, splits)
+        )
+        # A repair under way, begun about each point.
+        repairing = _grid._survival_weights(survives, t, splits)[2]
+    unswitched = 1.0 - switching
+    # A life's end with the other unit ready, the measure G dF.
+    ready = first - failing
+    # From each state to each, A the other unit starting its repair and
+    # S the other ready: a switch that fails ends in S a repair later.
+    a_to_a = cycle - unswitched * ready
+    a_to_s = unswitched * convolve(ready, repaired)
+    s_to_a = switching * first
+    s_to_s = unswitched * convolve(first, repaired)
+    # The states' renewal measures from S at 0: u_S (1 - s_to_s) = 1 +
+    # u_A a_to_s and u_A (1 - a_to_a) = u_S s_to_a.
+    less_a, less_s = -a_to_a, -s_to_s
+    less_a[0] += 1.0
+    less_s[0] += 1.0
+    inverse = _grid._series_inverse(
+        convolve(less_s, less_a) - convolve(s_to_a, a_to_s), len(t)
+    )
+    in_s = convolve(less_a, inverse)
+    in_a = convolve(s_to_a, inverse)
+    down = convolve(in_s, unswitched * convolve(first, repairing)) + convolve(
+        in_a, hat + unswitched * convolve(ready, repairing)
+    )
+    failures = convolve(in_s, unswitched * first) + convolve(
+        in_a, first - switching * ready
+    )
+    return (
+        down,
+        _grid._running(failures),
+        _grid._running(convolve(in_s + in_a, first)),
+    )
+
+
+def over_time(
+    life, repair, step: float, n: int, switching: float = 1.0
+) -> PairCurve:
     """A cold standby pair with one repair at a time, from new, on a grid
-    of ``n`` steps of ``step`` (see the module's notes): the values on it
-    and on one of half its step, extrapolated."""
+    of ``n`` steps of ``step`` (see the module's notes), whose switch
+    works with probability ``switching``: the values on it and on one of
+    half its step, extrapolated."""
     splits = np.union1d(_grid.knots(life), _grid.knots(repair))
-    coarse = _on_grid(life, repair, splits, step, n)
-    fine = _on_grid(life, repair, splits, 0.5 * step, 2 * n)
+    coarse = _on_grid(life, repair, splits, step, n, switching)
+    fine = _on_grid(life, repair, splits, 0.5 * step, 2 * n, switching)
     down, failures, units = (
         np.maximum((4.0 * b[::2] - a) / 3.0, 0.0) for a, b in zip(coarse, fine)
     )

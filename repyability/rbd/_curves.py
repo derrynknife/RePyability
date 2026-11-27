@@ -1445,7 +1445,13 @@ def _pair_curve(rbd, node, horizon: float, start: Optional[NodeState] = None):
                 f"typical life is about {scale:.3g}): estimate it by "
                 "simulation, with availability()."
             )
-        curve = _standby_cycle.over_time(life, repair, step, n)
+        curve = _standby_cycle.over_time(
+            life,
+            repair,
+            step,
+            n,
+            rbd._standby[node].switching_probability,
+        )
         if end >= horizon or curve.settled(values):
             break
         end = min(
