@@ -12,6 +12,27 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- `Network` takes more than two terminals, and directed links.
+  `Network(links, terminals=[...])` is the reliability of several nodes
+  staying connected to each other (K-terminal), and `terminals="all"` of
+  every node (all-terminal): exact, from the same decision diagram, whose
+  states now say which of the frontier's parts hold a terminal (a 10-by-10
+  grid with every node a terminal has 0.8 million states, where corner to
+  corner it has 1.9 million). Every method works for them: the importance
+  measures, the cut sets, the B-lives, the parameter uncertainty, the
+  levers, `compare`, the simulation (a sample lasts until the terminals
+  part) and saving (`to_dict` gains `terminals` and `directed`; an older
+  save still loads). `path_sets()` then lists the trees that join the
+  terminals, up to `MAX_PATHS`, and `network.METHOD = "paths"` refuses
+  more than two terminals. `source` and `target` stay, and two terminals
+  have the plans, values and seeded lifetimes they had.
+  `Network(..., directed=True)` makes each link work from its first node
+  to its second, for two terminals, decided from its simple paths (cycles
+  allowed), and `Network.to_rbd()` gives the `NonRepairableRBD` of a
+  directed network with no cycle. A directed network of more than two
+  terminals is refused, with the reason.
+
+
 - Demand plans for a probability of failing per demand in a
   `RepairableRBD` (a `"reliability"` that is a
   `surpyval.FixedEventProbability`), beside `"demand_rate"`:
