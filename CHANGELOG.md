@@ -41,8 +41,6 @@ release between minors that only adds (0.19.1).
   reliability moves with a parameter, and `levers` and `with_levers` list
   and move those parameters, each with the range its model accepts.
   `analysis_routes()` and the capability matrix show them.
-
-
 - `EventTree(initiator, headings, sequences=None)`: an event tree. The
   initiator is a frequency, or a `FaultTree` of repaired events whose
   `system_failure_frequency()` it is; each heading a `FaultTree` (its top
