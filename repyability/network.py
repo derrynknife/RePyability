@@ -60,6 +60,12 @@ no renewal code here, and the connection's availability, unavailability
 and failure frequency over time and in the long run follow from the same
 diagram at the elements' probabilities. Such a network refuses what needs
 a time at which its terminals part for good (``_refuse_repaired``).
+
+Links given a capacity carry up to it, and the network delivers the
+maximum flow between its two terminals: its distribution, at a time, in
+the long run and over a window, is worked out in
+``rbd/_network_capacity.py`` from the states of the elements that change
+the flow.
 """
 
 import dataclasses
@@ -109,6 +115,7 @@ from repyability.rbd.non_repairable_rbd import (
 )
 from repyability.rbd.rbd import Pairs, _set_order
 from repyability.rbd.results import (
+    CapacityDistribution,
     ConfidenceInterval,
     ImportanceTable,
     UncertaintyResult,
@@ -154,6 +161,13 @@ MAX_PATHS = 100_000
 #: million: beyond, the exact values refuse, pointing to the simulation. A
 #: square grid of 100 nodes has 1.9 million; one of 121, 7.7 million.
 MAX_STATES = 5_000_000
+
+#: The most states the exact capacity distribution is worked out from
+#: (each a set of links and nodes working and failed that gives one
+#: maximum flow, see ``rbd/_network_capacity.py``): beyond, it refuses,
+#: pointing to the simulation of states. Read when a network's capacity
+#: is first worked out.
+MAX_CAPACITY_STATES = 100_000
 
 #: The most terminals the links' order is tried from (see ``_link_order``):
 #: any order gives the same values, a narrower one a smaller diagram.
@@ -208,6 +222,9 @@ _REPAIRED_GIVES = _REPAIRED_OWN | frozenset(
         "analysis_routes",
         "to_dict",
         "to_json",
+        "capacity_distribution",
+        "point_capacity",
+        "mission_capacity",
     }
 )
 #: The analyses that need a time at which the terminals part for good.
@@ -306,6 +323,13 @@ class Network:
         along its links leads from ``source`` to ``target``; it takes two
         terminals. [`to_rbd`][repyability.Network.to_rbd] gives its
         reliability block diagram.
+    capacity : dict, optional
+        The most each link carries while it works, by link name, by
+        default None: a positive number (``inf`` for no limit). A link
+        given none limits nothing. The network's capacity is then the
+        maximum flow from ``source`` to ``target`` (see
+        [`capacity_distribution`][repyability.Network.capacity_distribution]);
+        it takes two terminals.
 
     Attributes
     ----------
@@ -322,6 +346,8 @@ class Network:
         The two terminals (None for a network of more than two).
     directed : bool
         Whether the links work one way only.
+    capacity : dict
+        The links' capacities, by name (empty if none was given).
     is_fixed : bool
         Whether every model is a fixed probability (time is then
         irrelevant, and ``x`` may be left out).
@@ -333,11 +359,13 @@ class Network:
         different nodes, a model has no ``sf`` or ``ff``, a terminal or a
         node in ``nodes`` is in no link, the terminals are the same node
         or fewer than two, both ``terminals`` and a source or target are
-        given, a node has the name of a link, or a repaired element's
-        spec has a key other than its life and repair.
+        given, a node has the name of a link, a repaired element's
+        spec has a key other than its life and repair, or a capacity is
+        not a positive number or is not a link's.
     NotImplementedError
-        If a directed network is given more than two terminals, or some
-        elements are repaired and others not.
+        If a directed network is given more than two terminals, some
+        elements are repaired and others not, or capacities are given
+        with more than two terminals.
 
     Examples
     --------
@@ -389,6 +417,7 @@ class Network:
         *,
         terminals: Any = None,
         directed: bool = False,
+        capacity: Optional[Dict[Hashable, float]] = None,
     ):
         if not isinstance(directed, (bool, np.bool_)):
             raise TypeError(
@@ -465,6 +494,12 @@ class Network:
                 "link, and every node that can fail, a component spec "
                 "('reliability' and 'repairability')."
             )
+        self.capacity = self._capacities(capacity)
+        # The flow graph and the capacity's states, once worked out, or
+        # why they were refused (see ``rbd/_network_capacity.py``).
+        self._flow: Any = None
+        self._capacity_tree: Any = None
+        self._capacity_refused: Optional[str] = None
         self._paths: Optional[List[frozenset]] = None
         self._plan: Optional[_Plan] = None
         self._repaired: Any = None
@@ -535,6 +570,52 @@ class Network:
                     f"Terminal {terminal!r} is in no link of the network."
                 )
         return found, every
+
+    def _capacities(self, capacity) -> Dict[Hashable, float]:
+        """The links' capacities, checked: each a positive number (``inf``
+        for no limit), of a link, in a network of two terminals."""
+        if capacity is None:
+            return {}
+        if not isinstance(capacity, Mapping):
+            raise ValueError(
+                "capacity must be a dict of link: amount, got "
+                f"{capacity!r}."
+            )
+        if not capacity:
+            return {}
+        if len(self.terminals) != 2:
+            raise NotImplementedError(
+                "A network's capacity is the maximum flow between two "
+                f"terminals: this one has {len(self.terminals)}. Give "
+                "source= and target= with capacity=, or leave capacity "
+                "out."
+            )
+        out: Dict[Hashable, float] = {}
+        for link, value in capacity.items():
+            if link in self.nodes and link not in self.links:
+                raise ValueError(
+                    f"{link!r} in capacity is a node: a network's "
+                    "capacities are its links' (a node passes whatever "
+                    "its links bring while it works). Give the capacity "
+                    "to the links that meet it."
+                )
+            if link not in self.links:
+                raise ValueError(
+                    f"Unknown link {link!r} in capacity: it is not a link "
+                    "of the network."
+                )
+            if isinstance(value, (bool, np.bool_)) or not is_number(value):
+                raise ValueError(
+                    f"The capacity of link {link!r} must be a number, got "
+                    f"{value!r}."
+                )
+            if not float(value) > 0.0:
+                raise ValueError(
+                    f"The capacity of link {link!r} must be positive (inf "
+                    f"for no limit), got {value!r}."
+                )
+            out[link] = float(value)
+        return out
 
     @classmethod
     def _element(cls, what: str, model):
@@ -1770,6 +1851,8 @@ class Network:
             "nodes": dict(self.nodes),
             "directed": self.directed,
         }
+        if self.capacity:
+            args["capacity"] = dict(self.capacity)
         if self._all_terminals:
             args["terminals"] = "all"
         elif len(self.terminals) == 2:
@@ -3542,6 +3625,252 @@ class Network:
         self._refuse_repaired("system_failure_frequency")
         return float(self._repaired.system_failure_frequency())
 
+    # ------------------------------------------------------------------
+    # Capacity
+    # ------------------------------------------------------------------
+
+    def capacity_distribution(
+        self,
+        x: Optional[ArrayLike] = None,
+        method: str = "exact",
+        *,
+        mc_samples: Optional[int] = None,
+        seed=None,
+    ) -> CapacityDistribution:
+        """The distribution of what the network can deliver from the
+        source to the target: at time/s ``x``, or, with repaired
+        elements, in the long run.
+
+        Each link carries up to its ``capacity`` (given when the network
+        was built) while it works, either way unless the network is
+        directed; a link given none limits nothing, and a failed link, or
+        a link at a failed node, carries nothing. The delivered amount is
+        the maximum flow between the two terminals, so it is positive
+        exactly when they are connected.
+
+        The exact distribution enumerates the states of the links and
+        nodes that change the maximum flow, each with its probability (a
+        product of the elements'), so it is as precise as they are. A
+        network of more than ``MAX_CAPACITY_STATES`` (100,000) such
+        states refuses, pointing to ``method="simulate"``, which draws
+        the elements' states instead. See the guide's
+        [Networks](../guide/networks.md).
+
+        Parameters
+        ----------
+        x : array_like, optional
+            Time/s, a number or an array, for a network of lifetimes; may
+            be left out if every model is a fixed probability. A network
+            of repaired elements takes none: this is its long-run
+            distribution, and
+            [`point_capacity`][repyability.Network.point_capacity] gives
+            the distribution at a time.
+        method : str, optional
+            ``"exact"`` (the default) or ``"simulate"``: the shares of
+            ``mc_samples`` states drawn from the elements' probabilities.
+        mc_samples : int, optional
+            The number of states drawn, by default 10_000.
+        seed : int, optional
+            Seeds the draws, by default None.
+
+        Returns
+        -------
+        CapacityDistribution
+            The capacities the network can have and their probabilities
+            (one per level, or for an array ``x`` one row per level and
+            one column per time): ``meets(demand)`` is the probability
+            that a demand is met, ``mean`` the expected capacity and
+            ``delivered_fraction(demand)`` the expected share of a demand
+            delivered. In the long run, the fraction of time at each
+            level.
+
+        Raises
+        ------
+        ValueError
+            If no link has a capacity (a ``Refused``), ``x`` is left out
+            of a network whose models depend on time or given to a
+            network of repaired elements, ``method`` is unknown, or
+            ``mc_samples`` or ``seed`` is given with ``method="exact"``.
+        NotImplementedError
+            With ``method="exact"``, if the capacity takes more than
+            ``MAX_CAPACITY_STATES`` states to work out.
+
+        Examples
+        --------
+        Two pipelines from a field to a plant, of 60 and 40 units, each
+        working with probability 0.9:
+
+        >>> from repyability import Network
+        >>> net = Network(
+        ...     {"a": ("field", "plant", 0.1), "b": ("field", "plant", 0.1)},
+        ...     "field", "plant",
+        ...     capacity={"a": 60, "b": 40},
+        ... )
+        >>> capacity = net.capacity_distribution()
+        >>> capacity.levels.tolist()
+        [0.0, 40.0, 60.0, 100.0]
+        >>> capacity.probabilities.round(4).tolist()
+        [0.01, 0.09, 0.09, 0.81]
+        >>> round(capacity.meets(50), 4), round(capacity.mean, 4)
+        (0.9, 90.0)
+        """
+        from repyability.rbd import _network_capacity
+
+        return _network_capacity.capacity_distribution(
+            self, x, method, mc_samples, seed
+        )
+
+    def point_capacity(
+        self,
+        x: ArrayLike,
+        method: str = "exact",
+        *,
+        mc_samples: Optional[int] = None,
+        seed=None,
+    ) -> CapacityDistribution:
+        """The distribution of what the network can deliver at each time
+        ``x``, the elements repaired and new at 0.
+
+        It is
+        [`capacity_distribution`][repyability.Network.capacity_distribution]
+        at a time rather than in the long run: each element is up at
+        ``x`` with its availability then (see
+        [`point_availability`][repyability.Network.point_availability]),
+        independently of the others, and the capacity's distribution
+        follows from the maximum flow of each state that matters. The
+        probability of a capacity above 0 is ``point_availability(x)``.
+
+        Parameters
+        ----------
+        x : array_like
+            Time/s, 0 or more: a number or an array.
+        method : str, optional
+            ``"exact"`` (the default) or ``"simulate"``: the shares of
+            ``mc_samples`` states drawn from the elements' availabilities
+            (the same uniforms at every time).
+        mc_samples : int, optional
+            The number of states drawn, by default 10_000.
+        seed : int, optional
+            Seeds the draws, by default None.
+
+        Returns
+        -------
+        CapacityDistribution
+            The levels and their probabilities at ``x``: one per level
+            for a number, and one row per level and one column per time
+            for an array.
+
+        Raises
+        ------
+        ValueError
+            If no link has a capacity or the elements are not repaired (a
+            ``Refused``), a time is negative, or as for
+            ``capacity_distribution``.
+        NotImplementedError
+            As for ``capacity_distribution``.
+
+        Examples
+        --------
+        Two lines of 60 and 40 units, each failing at rate 0.01 and
+        repaired at rate 0.5, so down at 10 with probability ``q = (1 /
+        51) (1 - exp(-5.1))``:
+
+        >>> import surpyval as surv
+        >>> from repyability import Network
+        >>> line = {
+        ...     "reliability": surv.Exponential.from_params([0.01]),
+        ...     "repairability": surv.Exponential.from_params([0.5]),
+        ... }
+        >>> net = Network(
+        ...     {"a": ("s", "t", line), "b": ("s", "t", line)},
+        ...     "s", "t",
+        ...     capacity={"a": 60, "b": 40},
+        ... )
+        >>> capacity = net.point_capacity(10.0)
+        >>> capacity.levels.tolist()
+        [0.0, 40.0, 60.0, 100.0]
+        >>> round(capacity.mean, 3)  # 100 (1 - q)
+        98.051
+        """
+        from repyability.rbd import _network_capacity
+
+        return _network_capacity.point_capacity(
+            self, x, method, mc_samples, seed
+        )
+
+    def mission_capacity(
+        self,
+        t: ArrayLike,
+        method: str = "exact",
+        *,
+        mc_samples: Optional[int] = None,
+        seed=None,
+    ) -> CapacityDistribution:
+        """The distribution of what the network can deliver over ``[0,
+        t]``, the elements repaired and new at 0: the expected fraction
+        of the window spent at each capacity.
+
+        It is the mean of
+        [`point_capacity`][repyability.Network.point_capacity] over the
+        window, integrated on pieces between the elements' curves' bends,
+        halved until the quadrature agrees with its halves' (as
+        [`mission_capacity`][repyability.RepairableRBD.mission_capacity]
+        integrates a diagram's). Its ``delivered_fraction(demand)`` is
+        the expected share of a demand delivered over the window, and as
+        ``t`` grows it approaches ``capacity_distribution()``.
+
+        Parameters
+        ----------
+        t : array_like
+            The window/s' ends, 0 or more: a number or an array.
+        method : str, optional
+            ``"exact"`` (the default) or ``"simulate"``: each of
+            ``mc_samples`` samples a time drawn evenly over the window
+            and the elements' states then.
+        mc_samples : int, optional
+            The number of samples, by default 10_000.
+        seed : int, optional
+            Seeds the draws, by default None.
+
+        Returns
+        -------
+        CapacityDistribution
+            The levels and the expected fraction of each window at each:
+            one per level for a number, and one row per level and one
+            column per window for an array.
+
+        Raises
+        ------
+        ValueError
+            As for ``point_capacity``.
+        NotImplementedError
+            As for ``capacity_distribution``, or if the integral takes
+            more pieces than the quadrature's limit.
+
+        Examples
+        --------
+        >>> import surpyval as surv
+        >>> from repyability import Network
+        >>> line = {
+        ...     "reliability": surv.Exponential.from_params([0.01]),
+        ...     "repairability": surv.Exponential.from_params([0.5]),
+        ... }
+        >>> net = Network(
+        ...     {"a": ("s", "t", line), "b": ("s", "t", line)},
+        ...     "s", "t",
+        ...     capacity={"a": 60, "b": 40},
+        ... )
+        >>> round(net.mission_capacity(100.0).mean, 3)
+        98.078
+        >>> round(net.capacity_distribution().mean, 3)  # 100 * 50 / 51
+        98.039
+        """
+        from repyability.rbd import _network_capacity
+
+        return _network_capacity.mission_capacity(
+            self, t, method, mc_samples, seed
+        )
+
     def to_dict(self) -> dict:
         """The network as a JSON-friendly dict (see ``from_dict``), as a
         diagram saves its nodes (see
@@ -3583,6 +3912,16 @@ class Network:
                 return {"component": _serialise_component(model)}
             return {"model": serialise_model(model)}
 
+        capacity = (
+            {
+                "capacity": [
+                    {"link": link, "capacity": value}
+                    for link, value in self.capacity.items()
+                ]
+            }
+            if self.capacity
+            else {}
+        )
         return {
             "repyability_version": __version__,
             "type": "Network",
@@ -3604,6 +3943,7 @@ class Network:
                 {"node": name, **saved(model)}
                 for name, model in self.nodes.items()
             ],
+            **capacity,
         }
 
     @classmethod
@@ -3663,6 +4003,10 @@ class Network:
             _node_name(e["node"]): loaded(e) for e in d.get("nodes") or ()
         }
         directed = bool(d.get("directed", False))
+        capacity = {
+            _node_name(e["link"]): float(e["capacity"])
+            for e in d.get("capacity") or ()
+        } or None
         # A save from before a network took more than two terminals has
         # only its source and target.
         terminals = d.get("terminals")
@@ -3673,11 +4017,16 @@ class Network:
                 _node_name(d["target"]),
                 nodes=nodes or None,
                 directed=directed,
+                capacity=capacity,
             )
         if terminals != "all":
             terminals = [_node_name(node) for node in terminals]
         return cls(
-            links, nodes=nodes or None, terminals=terminals, directed=directed
+            links,
+            nodes=nodes or None,
+            terminals=terminals,
+            directed=directed,
+            capacity=capacity,
         )
 
     def to_json(self, fp=None, **json_kwargs) -> Optional[str]:
@@ -3878,7 +4227,16 @@ class Network:
             edges += [(drawn[u], name), (name, drawn[v])]
             models[name] = self.models[name]
         return NonRepairableRBD(
-            edges, models, input_node=ends[0], output_node=ends[1]
+            edges,
+            models,
+            input_node=ends[0],
+            output_node=ends[1],
+            capacity={
+                link: value
+                for link, value in self.capacity.items()
+                if link in arcs
+            }
+            or None,
         )
 
     # ------------------------------------------------------------------
@@ -4137,6 +4495,7 @@ class Network:
                 )
             )
         self._repaired_routes(out, built, too_large)
+        self._capacity_routes(out, built)
         return with_importances(out)
 
     def _repaired_routes(self, out: dict, built, too_large) -> None:
@@ -4219,6 +4578,51 @@ class Network:
                 intensity_routes(self._repaired, name),
                 "failure intensities",
             )
+
+    def _capacity_routes(self, out: dict, built) -> None:
+        """The routes of the capacity's analyses, in ``out``: refused
+        without capacities, over time without repaired elements, and
+        where the states that matter are too many; otherwise exact from
+        the elements' probabilities (over a window, integrated)."""
+        from repyability.rbd import _network_capacity
+        from repyability.rbd import routes as r
+
+        how = {
+            "capacity_distribution": (
+                AnalysisRoute(
+                    r.EXACT,
+                    "Every state of the links and nodes that changes the "
+                    "maximum flow, at the elements' long-run "
+                    "availabilities, MTTF / (MTTF + MTTR).",
+                )
+                if self.is_repairable
+                else built(
+                    r.EXACT,
+                    "Every state of the links and nodes that changes the "
+                    "maximum flow, each with the product of its "
+                    "elements' probabilities at x (method='simulate' "
+                    "draws the states instead).",
+                )
+            ),
+            "point_capacity": built(
+                r.EXACT,
+                "Every state of the links and nodes that changes the "
+                "maximum flow, at the elements' availabilities at x.",
+            ),
+            "mission_capacity": built(
+                r.NUMERICAL,
+                "The capacity's distribution at a time, integrated over "
+                "the window on pieces between the elements' curves' "
+                "bends.",
+            ),
+        }
+        for name, route in how.items():
+            reason = r.refusal(
+                functools.partial(
+                    _network_capacity.require_capacity, self, name
+                )
+            ) or r.refusal(lambda: _network_capacity.tree(self))
+            out[name] = r.refused(reason) if reason else route
 
     def __repr__(self) -> str:
         unit = "" if self.unit is None else f", unit {self.unit!r}"

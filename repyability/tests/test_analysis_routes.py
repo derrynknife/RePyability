@@ -544,6 +544,13 @@ NETWORK_CALLS = {
     "mean_availability": lambda net: net.mean_availability(),
     "mean_unavailability": lambda net: net.mean_unavailability(),
     "system_failure_frequency": lambda net: net.system_failure_frequency(),
+    # With link capacities: at a time (in the long run, repaired), and
+    # over time.
+    "capacity_distribution": lambda net: net.capacity_distribution(
+        None if net.is_repairable and net.capacity else X
+    ),
+    "point_capacity": lambda net: net.point_capacity(X),
+    "mission_capacity": lambda net: net.mission_capacity(X),
 }
 
 BRIDGE_LINKS = {
@@ -560,7 +567,9 @@ def networks():
     failing node, one of fixed probabilities, and the bridge with three
     terminals, with every node a terminal, and with its links one way;
     and the bridge with repaired links and a repaired node, between two
-    terminals and between them all."""
+    terminals and between them all; and the bridge with capacities on
+    its links, of lifetimes, repaired, and one way."""
+    capacity = {"a": 3, "b": 2, "c": 1, "d": 2}
     lifetimes = {
         name: (u, v, W([100 + 10 * i, 1.5]))
         for i, (name, (u, v)) in enumerate(BRIDGE_LINKS.items())
@@ -578,6 +587,15 @@ def networks():
     }
     hub = {"reliability": E([0.001]), "repairability": W([5.0, 2.0])}
     return {
+        "capacity bridge": Network(
+            lifetimes, "s", "t", nodes={"x": E([0.01])}, capacity=capacity
+        ),
+        "repaired capacity bridge": Network(
+            repaired, "s", "t", nodes={"x": hub}, capacity=capacity
+        ),
+        "directed capacity bridge": Network(
+            lifetimes, "s", "t", directed=True, capacity=capacity
+        ),
         "repaired bridge": Network(repaired, "s", "t", nodes={"x": hub}),
         "repaired all terminals": Network(repaired, terminals="all"),
         "three terminals": Network(
