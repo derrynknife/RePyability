@@ -356,6 +356,8 @@ How each family of analyses is worked out on a diagram with each kind of node or
 | An upgrade, block-replaced, the unit in service kept | N | N | N | N | N | N | S | N; ✗ `allocate_redundancy` | – | ✗ | – | S |
 | An upgrade, tested, the unit in service kept | N | N | N | N | N | N | S | N; ✗ `allocate_redundancy` | ✗ `optimal_inspection_intervals` | N | – | S |
 | An upgrade, tests that take time | N | N | N | N | N | N | S | N; ✗ `allocate_redundancy` | ✗ `optimal_inspection_intervals` | N | – | S |
+| An upgrade, tests of varying length | N | N | N | N | N | N | S | N; ✗ `allocate_redundancy` | ✗ `optimal_inspection_intervals` | N | – | S |
+| An upgrade, tests that take time, the unit in service kept | N | N | N | N | N | N | S | N; ✗ `allocate_redundancy` | ✗ `optimal_inspection_intervals` | N | – | S |
 | A shelf of spares | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
 | Imperfect repair (Kijima) | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
 | Minimal repair | ✗ | ✗ | N | N; ✗ `expected_cost_rate` | N; ✗ 10 of 11 | ✗ | S; ✗ `mean_availability_uncertainty`, `expected_cost_rate_uncertainty` | ✗ | – | ✗ | ✗ `capacity_distribution` | S |
