@@ -56,6 +56,7 @@ from repyability.rbd import (
     _crews,
     _curves,
     _overrides,
+    _phase_type,
     _requirements,
     _unplanned,
 )
@@ -68,15 +69,28 @@ from repyability.rbd._mean_lifetime import (
 from repyability.rbd.modular import NODE, SERIES, GraphStructure
 from repyability.rbd.results import ConfidenceInterval, FirstFailureBounds
 from repyability.utils.checks import (
+    is_number,
     nonnegative_times,
     one_of,
     simulation_options,
 )
+from repyability.utils.vectors import dot
 
 #: The most steps uniformization takes, and the most work (steps times the
 #: chain's transitions) it does before the chain is given up on.
 MAX_STEPS = 2_000_000
 MAX_WORK = 3e9
+#: The most states of a chain whose lives or repairs are followed as
+#: phases.
+MAX_PHASE_STATES = 400_000
+#: The least probability of failing that a value's accuracy is sized by:
+#: about what uniformization itself keeps.
+_FLOOR = 1e-12
+#: The share of the largest probability of failing asked for below which
+#: one's accuracy is sized by that share, not by itself.
+_SMALL = 1e-3
+#: How the exact values are worked out (``_require_exact``).
+AS_SERIES, AS_CHAIN, AS_PHASES = "series", "chain", "phases"
 #: A step's survival probability below this has ended: the rest of the
 #: chain's survival is within it.
 _ENDED = 1e-18
@@ -90,7 +104,7 @@ _SIMULATE = (
 
 
 def _refuse(why: str) -> NoReturn:
-    raise NotImplementedError(why + _SIMULATE)
+    raise NotImplementedError(why + "." + _SIMULATE)
 
 
 def _coupling(rbd) -> Optional[str]:
@@ -243,32 +257,35 @@ def _is_series(rbd) -> bool:
     return structure.root is not None and _in_series(structure, structure.root)
 
 
-def _markov_rates(rbd) -> Tuple[Dict[Any, Tuple[float, float]], int]:
+def _rates(rbd) -> Optional[Dict[Any, Tuple[float, float]]]:
     """Each component's failure and repair rates (``inf`` for an instant
-    repair), and the number of crews, for the Markov chain; raise if the
-    components are not exponential or the chain is too large."""
+    repair) if every life and repair is exponential; None otherwise."""
     rates: Dict[Any, Tuple[float, float]] = {}
     for node, component in rbd.components.items():
         life = _constant_rate(component.reliability)
-        if life is None:
-            _refuse(
-                "A structure that is not a series needs exponential lives "
-                f"(a constant failure rate), and the life of component "
-                f"{node!r} is not one"
-            )
         repair = _repair_rate(component.time_to_replace)
-        if repair is None:
-            _refuse(
-                "A structure that is not a series needs exponential repair "
-                "times (or instant repair), and the repair times of "
-                f"component {node!r} are not"
-            )
+        if life is None or repair is None:
+            return None
         rates[node] = (life, repair)
-    crews = rbd.repair_crews or max(len(rates), 1)
+    return rates
+
+
+def _crew_count(rbd) -> int:
+    return rbd.repair_crews or max(len(rbd.components), 1)
+
+
+def _queued(rbd) -> bool:
+    """Whether repairs can wait for a crew, which ties every component to
+    the others."""
+    return bool(_crews._crews_limited(rbd) or _crews._call_when(rbd))
+
+
+def _chain_fits(rbd, rates: dict) -> None:
+    """Raise if the chain of exponential components is too large."""
     count = crew_chain.state_count(
         [rbd._priority.get(node, 0.0) for node in rates],
         [math.isinf(repair) for _, repair in rates.values()],
-        crews,
+        _crew_count(rbd),
         _crews._call_when(rbd),
     )
     if count > crew_chain.MAX_STATES:
@@ -277,48 +294,157 @@ def _markov_rates(rbd) -> Tuple[Dict[Any, Tuple[float, float]], int]:
             "Its Markov chain has more than the "
             f"{crew_chain.MAX_STATES:,} states it is solved for"
         )
-    return rates, crews
 
 
-def _require_exact(rbd) -> bool:
+def _modules(rbd) -> Tuple[list, list]:
+    """``(alone, modules)``: the components each of which fails the
+    system alone, and the other series factors of the structure, each the
+    list of its components. With repairs that wait for a crew, one module
+    of every component, as the queue ties them."""
+    structure = rbd._decomposition()
+    if _queued(rbd):
+        return [], [list(rbd.components)]
+    if structure.always_works:
+        return [], []
+    if structure.root is None:
+        return [], [[n for n in rbd.components if n in structure.nodes]]
+    alone: list = []
+    modules: list = []
+
+    def under(term: int) -> list:
+        entry = structure.terms[term]
+        if entry[0] == NODE:
+            return [entry[1]]
+        return [node for child in entry[1] for node in under(child)]
+
+    def walk(term: int) -> None:
+        entry = structure.terms[term]
+        if entry[0] == NODE:
+            alone.append(entry[1])
+        elif entry[0] == SERIES:
+            for child in entry[1]:
+                walk(child)
+        else:
+            modules.append(under(term))
+
+    walk(structure.root)
+    return alone, modules
+
+
+def _node_times(rbd, node, states, level: int, horizon: float) -> tuple:
+    """The phases of the life and of the repair of ``node`` (the repair
+    a rate of ``inf`` if instant), from its state."""
+    component = rbd.components[node]
+    state = states.get(node)
+    up = state is None or state.alive
+    age = 0.0 if state is None or not up else float(state.age)
+    life = _phase_type.phases(component.reliability, level, horizon, age)
+    if _repair_rate(component.time_to_replace) == math.inf:
+        return life, math.inf
+    gone = 0.0 if up else float(state.down_for)
+    return life, _phase_type.phases(
+        component.time_to_replace, level, horizon, gone
+    )
+
+
+def _phases_fit(rbd) -> None:
+    """Raise if the diagram's lives and repairs cannot be followed as
+    phases: a time with no distribution function or scale, or a module
+    whose chain, at the fewest levels a value is extrapolated from, has
+    too many states."""
+    level = _phase_type.LEVELS[_phase_type.FEWEST - 1]
+    for module in _modules(rbd)[1]:
+        count = 1
+        for node in module:
+            component = rbd.components[node]
+            for what, model in (
+                ("life", component.reliability),
+                ("repair times", component.time_to_replace),
+            ):
+                if not callable(getattr(model, "ff", None)):
+                    _refuse(
+                        "A structure that is not a series follows its "
+                        f"lives and repairs as phases, and the {what} of "
+                        f"component {node!r} have no distribution "
+                        "function (ff) to take them from"
+                    )
+            try:
+                life, repair = _node_times(rbd, node, {}, level, math.inf)
+            except NotImplementedError as error:
+                _refuse(f"Component {node!r}: {error}".rstrip("."))
+            count *= len(life.rates) + (
+                1 if repair == math.inf else len(repair.rates)
+            )
+        if count > MAX_PHASE_STATES:
+            _refuse(
+                "A structure that is not a series follows the lives and "
+                "repairs that are not exponential as phases, and the "
+                f"chain of components {module} would have more than the "
+                f"{MAX_PHASE_STATES:,} states it is followed over (about "
+                f"{count:,})"
+            )
+
+
+def _require_exact(rbd) -> str:
     """Raise if the first failure's exact values do not cover the diagram;
-    otherwise whether it is worked out as a series (True) or by the
-    Markov chain (False). A sub-system is drawn in (``_flat``)."""
+    otherwise how it is worked out: ``AS_SERIES``, ``AS_CHAIN`` (the
+    Markov chain of exponential components) or ``AS_PHASES`` (chains
+    with phases). A sub-system is drawn in (``_flat``)."""
     rbd = _flat(rbd)
     structure = rbd._decomposition()
     if isinstance(structure, GraphStructure):
         raise NotImplementedError(structure.reason)
     _components_are_plain(rbd)
     if _is_series(rbd):
-        return True
-    _markov_rates(rbd)
-    return False
+        return AS_SERIES
+    rates = _rates(rbd)
+    if rates is not None:
+        _chain_fits(rbd, rates)
+        return AS_CHAIN
+    _phases_fit(rbd)
+    return AS_PHASES
+
+
+_ROUTES = {
+    AS_SERIES: "A series structure: the product of each component's "
+    "survival from its state at 0, as no repair can come before the first "
+    "failure.",
+    AS_CHAIN: "The Markov chain of the components' states (with the repair "
+    "crews' queue), the states the system is down in made absorbing: "
+    "the survival probability by uniformization (to about 1e-13) and "
+    "the mean time to absorption from one linear solve.",
+    AS_PHASES: "The Markov chain of the components' states (with the "
+    "repair crews' queue), the states the system is down in made "
+    "absorbing, each life and repair that is not exponential followed as "
+    "phases (a mixture of Erlangs on a grid of ages; an Erlang's own, "
+    "exactly), each series factor of the structure on its own: the grid "
+    "is halved, and the values extrapolated, until they agree to rtol "
+    "(1e-3 of each probability of failing, by default), and refused "
+    "when the values are asked for if they do not within the chain's "
+    "size, which depends on the times.",
+}
 
 
 def exact_route(rbd) -> str:
     """How the exact values are worked out, for ``analysis_routes``."""
-    return (
-        "A series structure: the product of each component's survival "
-        "from its state at 0, as no repair can come before the first "
-        "failure."
-        if _require_exact(rbd)
-        else "The Markov chain of the components' states (with the repair "
-        "crews' queue), the states the system is down in made absorbing: "
-        "the survival probability by uniformization (to about 1e-13) and "
-        "the mean time to absorption from one linear solve."
-    )
+    return _ROUTES[_require_exact(rbd)]
 
 
 # -- a series structure ------------------------------------------------------
 
 
-def _series_parts(rbd, states: dict) -> list:
-    """For each component the system needs: ``(sf, age)``, its survival
+def _series_parts(rbd, states: dict, nodes=None) -> list:
+    """For each component the system needs (or each of ``nodes``):
+    ``(sf, age)``, its survival
     function and age at 0; a component down at 0 makes the system's
     reliability 0 (an empty list is never returned for it: see
     ``_down_at_start``)."""
     structure = rbd._decomposition()
-    needed = [node for node in rbd.components if node in structure.nodes]
+    needed = [
+        node
+        for node in rbd.components
+        if node in (structure.nodes if nodes is None else nodes)
+    ]
     parts = []
     for node in needed:
         state = states.get(node)
@@ -368,41 +494,145 @@ def _series_mean(parts: list) -> float:
 # -- the Markov chain --------------------------------------------------------
 
 
-class _Absorbing:
-    """The crews' chain with the system-down states made absorbing, from
-    the start distribution ``start`` over its states."""
+_FAR_APART = (
+    "Its Markov chain's rates are too far apart to follow over this long"
+)
 
-    def __init__(self, rbd, states: dict):
+
+class _Absorbing:
+    """The crews' chain of ``nodes`` (every component, by default) with
+    the system-down states made absorbing, from the start distribution
+    ``start`` over its states; each life and repair as its phases at
+    ``level`` (see ``_phase_type``), to the ages a ``horizon`` reaches.
+    The other components are taken as up: ``nodes`` are a series factor
+    of the structure. Raise ``_phase_type.Unaffordable`` if the chain is
+    too large, or too long to follow."""
+
+    def __init__(
+        self,
+        rbd,
+        states: dict,
+        nodes=None,
+        level: int = _phase_type.LEVELS[0],
+        horizon: float = math.inf,
+    ):
         from scipy import sparse
 
-        rates, crews = _markov_rates(rbd)
-        nodes = list(rates)
+        nodes = list(rbd.components) if nodes is None else list(nodes)
+        named = {node: states[node] for node in nodes if node in states}
+        _overrides.refuse_in_chain(named)
+        times = [
+            _node_times(rbd, node, named, level, horizon) for node in nodes
+        ]
+        self.exact = all(
+            time == math.inf or time.exact for pair in times for time in pair
+        )
+        stationary = [node for node, s in named.items() if s.stationary]
+        if stationary:
+            if len(stationary) < len(nodes):
+                raise NotImplementedError(
+                    "The components' long-run states are tied together by "
+                    "the repair queue: start every component in its "
+                    "long-run state (state='stationary'), or give each its "
+                    "state."
+                )
+            if any(
+                time != math.inf and len(time.rates) > 1
+                for pair in times
+                for time in pair
+            ):
+                _refuse(
+                    "The exact values do not start lives and repairs that "
+                    "are not exponential from their long-run state "
+                    "(state='stationary'): give each component's state"
+                )
+            start = None
+        else:
+            down = tuple(
+                k
+                for k, node in enumerate(nodes)
+                if node in named and not named[node].alive
+            )
+            crews = rbd.repair_crews or len(nodes)
+            if len(down) > crews:
+                raise ValueError(
+                    f"{len(down)} components are down at the start, in "
+                    f"repairs going on, which takes more than the {crews} "
+                    "repair crew(s): a state does not say which jobs wait."
+                )
+            start = (down, ())
         chain = crew_chain.solve(
             nodes,
-            [rates[node][0] for node in nodes],
-            [rates[node][1] for node in nodes],
+            [life for life, _ in times],
+            [repair for _, repair in times],
             [rbd._priority.get(node, 0.0) for node in nodes],
-            crews,
+            _crew_count(rbd),
             _crews._call_when(rbd),
+            start=start,
+            limit=MAX_PHASE_STATES + 1,
         )
+        size = len(chain.states)
+        if size > MAX_PHASE_STATES:
+            raise _phase_type.Unaffordable(
+                "Its Markov chain has more than the "
+                f"{MAX_PHASE_STATES:,} states it is followed over"
+            )
         structure = rbd._decomposition()
-        size = len(chain.probabilities)
-        node_up = {
-            node: chain.up[:, k].astype(float)
-            for k, node in enumerate(chain.nodes)
-            if node in structure.nodes
-        }
+        node_up = {node: np.ones(size) for node in structure.nodes}
+        for k, node in enumerate(chain.nodes):
+            if node in node_up:
+                node_up[node] = chain.up[:, k].astype(float)
         works, _ = structure.probabilities(node_up, shape=(size,))
         self.up = np.asarray(works, dtype=float) > 0.5
-        self.start = _start(rbd, chain, states)[self.up]
+        if start is None:
+            begin = np.array(chain.probabilities, dtype=float)
+        else:
+            begin = np.zeros(size)
+            begin[0] = 1.0
+        self.start = begin[self.up]
         generator = sparse.csr_matrix(chain.generator)
         self.generator = generator[self.up][:, self.up].tocsr()
         # The system down at the start has failed already.
         self.at_start = float(self.start.sum())
+        # Uniformization's steps so far (``_followed``).
+        self._jump: Any = None
+        self._vector = self.start.copy()
+        self._survivals: list = []
+        self._over = False
 
-    def sf(self, x: np.ndarray) -> np.ndarray:
-        """``p(0) exp(T t) 1`` at each time, by uniformization."""
+    def _followed(self, rate: float, needed: int, to_end: bool) -> np.ndarray:
+        """``s_k = p(0) P^k 1`` for the first ``needed`` steps of the
+        chain uniformized at ``rate`` (fewer once the chain has ended),
+        kept from call to call. With ``to_end``, as many of them as the
+        work allows are taken before giving up: the chain may end first."""
         from scipy import sparse
+
+        matrix = self.generator
+        size = matrix.shape[0]
+        if self._jump is None:
+            self._jump = (
+                sparse.identity(size, format="csr") + matrix / rate
+            ).T
+        steps = min(needed, MAX_STEPS)
+        afford = int(MAX_WORK / max(matrix.nnz, 1))
+        if not self._over and needed > afford:
+            if not to_end:
+                raise _phase_type.Unaffordable(_FAR_APART)
+            steps = min(steps, afford)
+        ones = np.ones(size)
+        while len(self._survivals) < steps and not self._over:
+            value = dot(self._vector, ones)
+            self._survivals.append(value)
+            if value < _ENDED:
+                self._over = True
+                break
+            self._vector = self._jump @ self._vector
+        if not self._over and steps < needed:
+            raise _phase_type.Unaffordable(_FAR_APART)
+        return np.array(self._survivals[:needed])
+
+    def sf(self, x: np.ndarray, to_end: bool = False) -> np.ndarray:
+        """``p(0) exp(T t) 1`` at each time, by uniformization."""
         from scipy.stats import poisson
 
         matrix = self.generator
@@ -410,47 +640,31 @@ class _Absorbing:
         if size == 0 or self.at_start == 0.0:
             return np.zeros(x.shape)
         top = float(np.max(-matrix.diagonal()))
-        if top == 0.0:
+        if top == 0.0 or not self._leaks().any():
             return np.full(x.shape, self.at_start)
         rate = 1.02 * top
-        jump = sparse.identity(size, format="csr") + matrix / rate
         mean = rate * float(x.max())
         needed = int(mean + _SPREAD * math.sqrt(mean) + _MARGIN) + 1
-        steps = min(needed, MAX_STEPS)
-        if needed * max(matrix.nnz, 1) > MAX_WORK:
-            _refuse(
-                "Its Markov chain's rates are too far apart to follow "
-                "over this long"
-            )
-        survivals = []
-        vector = self.start.copy()
-        ones = np.ones(size)
-        for _ in range(steps):
-            value = float(vector @ ones)
-            survivals.append(value)
-            if value < _ENDED:
-                break
-            vector = jump.T @ vector
-        s = np.array(survivals)
-        if len(s) == steps and s[-1] >= _ENDED and steps < needed:
-            _refuse(
-                "Its Markov chain's rates are too far apart to follow "
-                "over this long"
-            )
+        s = self._followed(rate, needed, to_end)
         k = np.arange(len(s))
         out = np.empty(x.shape)
         for i, t in enumerate(x.ravel()):
             out.ravel()[i] = float(poisson.pmf(k, rate * t) @ s)
         return np.minimum(out, self.at_start)
 
+    def _leaks(self) -> np.ndarray:
+        """The states the system can fail from at once."""
+        matrix = self.generator
+        return np.asarray(matrix.sum(axis=1)).ravel() < -1e-12 * np.maximum(
+            -matrix.diagonal(), 1.0
+        )
+
     def _ends(self) -> bool:
         """Whether the system can fail from every state the chain may start
         in: from a state where nothing fails (every repair instant, say) it
         never does, and the mean time is infinite."""
         matrix = self.generator
-        leak = np.asarray(matrix.sum(axis=1)).ravel() < -1e-12 * np.maximum(
-            -matrix.diagonal(), 1.0
-        )
+        leak = self._leaks()
         reach = matrix.copy()
         reach.setdiag(0.0)
         reach.eliminate_zeros()
@@ -477,48 +691,167 @@ class _Absorbing:
         return float(self.start @ np.atleast_1d(time))
 
 
-def _start(rbd, chain, states: dict) -> np.ndarray:
-    """The chain's states' probabilities at 0 (see ``_curves._crew_start``,
-    with no limit on the crews when the diagram has none)."""
-    named = {node: states[node] for node in chain.nodes if node in states}
-    _overrides.refuse_in_chain(named)
-    stationary = [node for node, s in named.items() if s.stationary]
-    if stationary:
-        if len(stationary) < len(chain.nodes):
-            raise NotImplementedError(
-                "The components' long-run states are tied together by the "
-                "repair queue: start every component in its long-run state "
-                "(state='stationary'), or give each its state."
-            )
-        return np.array(chain.probabilities, dtype=float)
-    down = tuple(
-        k
-        for k, node in enumerate(chain.nodes)
-        if node in named and not named[node].alive
-    )
-    crews = rbd.repair_crews or len(chain.nodes)
-    if len(down) > crews:
-        raise ValueError(
-            f"{len(down)} components are down at the start, in repairs "
-            f"going on, which takes more than the {crews} repair crew(s): "
-            "a state does not say which jobs wait."
+class _Factored:
+    """The first failure of a diagram whose repairs wait for no crew, as
+    its structure's series factors: the components that fail the system
+    alone, by their survival, and the other factors, independent of each
+    other, each by its chain (``_Absorbing``) at ``level``."""
+
+    def __init__(self, rbd, states: dict, level: int, horizon: float):
+        alone, modules = _modules(rbd)
+        self.failed = any(
+            node in states and not states[node].alive for node in alone
         )
-    start = np.zeros(len(chain.probabilities))
-    start[chain.states.index((down, ()))] = 1.0
-    return start
+        self.parts = _series_parts(rbd, states, alone)
+        self.models = [
+            rbd.components[node].reliability
+            for module in modules
+            for node in module
+        ]
+        self.chains = [
+            _Absorbing(rbd, states, module, level, horizon)
+            for module in modules
+        ]
+        self.exact = all(chain.exact for chain in self.chains)
+
+    def sf(self, x: np.ndarray, to_end: bool = False) -> np.ndarray:
+        x = np.asarray(x, dtype=float)
+        if self.failed:
+            return np.zeros(x.shape)
+        out = _series_sf(self.parts, x)
+        # A chain is followed only as far as the others leave anything:
+        # one too long to follow to its end may not need to be.
+        waiting = list(self.chains)
+        while waiting:
+            later, short = [], None
+            for chain in waiting:
+                live = out > _ENDED
+                if not live.any():
+                    continue
+                try:
+                    out[live] *= chain.sf(x[live], to_end)
+                except _phase_type.Unaffordable as error:
+                    later.append(chain)
+                    short = error
+            if short is not None and len(later) == len(waiting):
+                raise short
+            waiting = later
+        return out
+
+    def mean(self) -> float:
+        if not self.parts and len(self.chains) == 1:
+            return 0.0 if self.failed else self.chains[0].mean()
+        if self.failed:
+            return 0.0
+        if not self.parts and not any(c._ends() for c in self.chains):
+            return math.inf
+        knots = [np.array([1.0])]
+        for model, age in self.parts:
+            shifted = np.asarray(model_knots(model), dtype=float) - age
+            knots.append(shifted[shifted > 0.0])
+        knots += [
+            np.asarray(model_knots(model), dtype=float)
+            for model in self.models
+        ]
+        return mean_lifetime(
+            lambda t: self.sf(np.asarray(t, dtype=float), True),
+            np.concatenate(knots),
+        )
+
+
+def _failing_size(survival: np.ndarray) -> np.ndarray:
+    """What the accuracy of each probability of failing is a share of:
+    the probability itself, or ``_SMALL`` of the largest of them if it
+    is less (and never less than ``_FLOOR``)."""
+    failing = 1.0 - survival
+    return np.maximum(
+        failing, max(_SMALL * float(np.max(failing, initial=0.0)), _FLOOR)
+    )
+
+
+def _check_rtol(rtol) -> float:
+    if not is_number(rtol) or not 0.0 < rtol < 1.0:
+        raise ValueError(
+            f"rtol must be a number above 0 and below 1, got {rtol!r}."
+        )
+    return float(rtol)
+
+
+def _by_phases(rbd, states: dict, value, horizon: float, rtol, size):
+    """``value(_Factored)`` at the levels of phases, extrapolated until
+    it agrees to ``rtol * size(value)`` (``_phase_type.converged``)."""
+    first = _Factored(rbd, states, _phase_type.LEVELS[0], horizon)
+    return _phase_type.converged(
+        lambda level: value(
+            first
+            if level == _phase_type.LEVELS[0]
+            else _Factored(rbd, states, level, horizon)
+        ),
+        rtol,
+        size,
+        first.exact,
+        _SIMULATE,
+    )
 
 
 # -- the methods -------------------------------------------------------------
 
 
-def _exact_sf(rbd, x: np.ndarray, state) -> np.ndarray:
+def _chain(rbd, states: dict) -> _Absorbing:
+    try:
+        return _Absorbing(rbd, states)
+    except _phase_type.Unaffordable as error:
+        _refuse(str(error))
+
+
+def _exact_sf(rbd, x: np.ndarray, state, rtol: float) -> np.ndarray:
     rbd = _flat(rbd, state)
     states = _curves._states(rbd, state)
-    if _require_exact(rbd) and not any(s.stationary for s in states.values()):
+    how = _require_exact(rbd)
+    stationary = any(s.stationary for s in states.values())
+    if how == AS_SERIES and not stationary:
         if _down_at_start(rbd, states):
             return np.zeros(x.shape)
         return _series_sf(_series_parts(rbd, states), x)
-    return _Absorbing(rbd, states).sf(x)
+    if how == AS_PHASES and not stationary:
+        if x.size == 0:
+            return np.zeros(x.shape)
+        survival = _by_phases(
+            rbd,
+            states,
+            lambda factored: factored.sf(x),
+            float(x.max()),
+            rtol,
+            _failing_size,
+        )
+        return np.clip(survival, 0.0, 1.0)
+    try:
+        return _chain(rbd, states).sf(x)
+    except _phase_type.Unaffordable as error:
+        _refuse(str(error))
+
+
+def _exact_mean(rbd, state, rtol: float) -> float:
+    rbd = _flat(rbd, state)
+    states = _curves._states(rbd, state)
+    how = _require_exact(rbd)
+    stationary = any(s.stationary for s in states.values())
+    if how == AS_SERIES and not stationary:
+        if _down_at_start(rbd, states):
+            return 0.0
+        return _series_mean(_series_parts(rbd, states))
+    if how == AS_PHASES and not stationary:
+        return float(
+            _by_phases(
+                rbd,
+                states,
+                lambda factored: np.array(factored.mean()),
+                math.inf,
+                rtol,
+                lambda value: np.maximum(np.abs(value), _FLOOR),
+            )
+        )
+    return _chain(rbd, states).mean()
 
 
 def first_failure_sf(
@@ -530,11 +863,13 @@ def first_failure_sf(
     mc_samples: Optional[int] = None,
     seed: Optional[int] = None,
     engine: str = "auto",
+    rtol: float = 1e-3,
 ):
     """See ``RepairableRBD.first_failure_sf``."""
     one_of("method", method, ("exact", "simulate"))
     times = nonnegative_times(x)
     scalar = np.ndim(x) == 0
+    rtol = _check_rtol(rtol)
     if method == "exact":
         simulation_options(
             "first_failure_sf()",
@@ -545,7 +880,7 @@ def first_failure_sf(
                 "engine": None if engine == "auto" else engine,
             },
         )
-        out = _exact_sf(rbd, times, state)
+        out = _exact_sf(rbd, times, state, rtol)
     else:
         runs = _simulated(
             rbd,
@@ -579,9 +914,11 @@ def mean_time_to_first_failure(
     seed: Optional[int] = None,
     engine: str = "auto",
     confidence: float = 0.95,
+    rtol: float = 1e-3,
 ):
     """See ``RepairableRBD.mean_time_to_first_failure``."""
     one_of("method", method, ("exact", "simulate"))
+    rtol = _check_rtol(rtol)
     if method == "exact":
         simulation_options(
             "mean_time_to_first_failure()",
@@ -592,15 +929,7 @@ def mean_time_to_first_failure(
                 "engine": None if engine == "auto" else engine,
             },
         )
-        rbd = _flat(rbd, state)
-        states = _curves._states(rbd, state)
-        if _require_exact(rbd) and not any(
-            s.stationary for s in states.values()
-        ):
-            if _down_at_start(rbd, states):
-                return 0.0
-            return _series_mean(_series_parts(rbd, states))
-        return _Absorbing(rbd, states).mean()
+        return _exact_mean(rbd, state, rtol)
     if t_simulation is None:
         raise ValueError(
             "method='simulate' needs t_simulation, the time each "

@@ -74,7 +74,7 @@ def test_results_scale_with_the_unit(c):
 
 @pytest.mark.parametrize("c", [1e-6, 1e3, 1e6])
 def test_the_first_failure_bracket_scales_with_the_unit(c):
-    # A Weibull pair with repair, where the exact values refuse.
+    # A Weibull pair with repair.
     def pair(c):
         part = {"reliability": W([1000 * c, 2]), "repairability": E([0.1 / c])}
         return RepairableRBD(
@@ -93,6 +93,32 @@ def test_the_first_failure_bracket_scales_with_the_unit(c):
         )
     assert scaled.mean_time_to_first_failure_bound() / c == pytest.approx(
         base.mean_time_to_first_failure_bound(), rel=1e-7
+    )
+
+
+@pytest.mark.parametrize("c", [1e-6, 1e3, 1e6])
+def test_the_first_failure_by_phases_scales_with_the_unit(c):
+    # A Weibull pair with lognormal repairs: its lives and repairs are
+    # followed as phases, on grids sized from the models.
+    def pair(c):
+        part = {
+            "reliability": W([100 * c, 2]),
+            "repairability": surv.LogNormal.from_params([np.log(10 * c), 0.5]),
+        }
+        return RepairableRBD(
+            [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
+            {"a": part, "b": part},
+        )
+
+    base, scaled = pair(1.0), pair(c)
+    t = np.array([0.0, 20.0, 100.0])
+    np.testing.assert_allclose(
+        scaled.first_failure_sf(t * c, rtol=1e-2),
+        base.first_failure_sf(t, rtol=1e-2),
+        rtol=1e-9,
+    )
+    assert scaled.mean_time_to_first_failure(rtol=1e-2) / c == pytest.approx(
+        base.mean_time_to_first_failure(rtol=1e-2), rel=1e-9
     )
 
 

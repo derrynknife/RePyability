@@ -323,6 +323,18 @@ minimum surpyval is in `pyproject.toml` (0.29 as of 0.20).
   with its copies drawn out. Likewise a standby group's chain (`_standby_chain.py`) copies
   `_events._StandbyGroup`'s rules (switching, spares, repairs), checked by
   `test_repairable_standby.py`.
+- **The first failure's chain is the crews' chain with phases**
+  (`_first_failure._Absorbing`, on `_crew_chain._enumerate`): a rate
+  given to the chain is an exponential time's, or a time's
+  `_phase_type.Phases` (a mixture of Erlangs on a grid of ages; an
+  Erlang's own), and a state then carries each component's phase. There
+  is one builder: an exponential diagram is the case of one phase each,
+  and what the queue does (`failed`, `taken`) is the same for both, so a
+  change to the simulation's queue still goes into it once. Values with
+  phases that are not exact are extrapolated over the levels of
+  `_phase_type.LEVELS` until they agree to `rtol`
+  (`_phase_type.converged`); `test_first_failure_phases.py` checks them
+  against chains by hand, the bracket and the simulation.
 - **A phased mission's Markov chain (`repyability/rbd/_mission_chain.py`)
   copies the simulation's take-overs** (`_mission_runs._take_over`,
   `_after_standby`, `draw_switches`): spares called on in the phase's

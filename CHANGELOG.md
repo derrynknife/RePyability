@@ -12,6 +12,30 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- `RepairableRBD.first_failure_sf` and `mean_time_to_first_failure` work
+  out a redundant structure whose lives or repairs are not exponential
+  (Weibull, gamma, lognormal, any model with a distribution function)
+  without simulating, where they refused: in the Markov chain whose
+  system-down states absorb, each such time is followed as phases (a
+  mixture of Erlangs on a grid of ages, which converges to the time as the
+  grid is refined), the grid halved and the values extrapolated until
+  they agree to the new `rtol` (1e-3 by default: of each probability
+  of failing, or of the mean). A gamma time of
+  whole shape (an Erlang) has its own phases and is exact. Repair crews
+  that jobs wait for are taken as before, with phases; each series
+  factor of the structure is chained alone, and a state gives a unit's
+  age or how long its repair has gone on. A chain of more than 400,000
+  states (more than two units that are not exponential in one redundant
+  part, as a rule), or values that do not settle to `rtol`, refuse,
+  saying how far they agreed and naming `first_failure_bounds` and the
+  simulation; a start in the long-run state is refused with phases.
+  `analysis_routes()` reports the route. Exponential diagrams keep their
+  values, to rounding: the survival's steps are now summed off the
+  threaded BLAS, and a chain started with units down is listed from that
+  state, which moves a value by up to about 1e-15 (1e-13 of a mean). A
+  chain that can never fail now gives exactly 1. No seeded result
+  changes.
+
 - `RepairableRBD.first_failure_bounds(t, state=None)` brackets the
   reliability of the first system failure wherever `expected_events` is
   worked out, including where `first_failure_sf` refuses (a redundant

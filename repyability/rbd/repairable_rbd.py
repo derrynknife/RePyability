@@ -3647,6 +3647,7 @@ class RepairableRBD(RBD):
         mc_samples: Optional[int] = None,
         seed: Optional[int] = None,
         engine: str = "auto",
+        rtol: float = 1e-3,
     ):
         """The probability that the system runs to each time ``x`` without
         a failure: the reliability of the first system failure.
@@ -3660,7 +3661,7 @@ class RepairableRBD(RBD):
         is the probability the system is up *at* ``t``, whether or not it
         failed and was repaired before.)
 
-        It is exact where the model allows:
+        It is worked out without simulating where the model allows:
 
         - **a series structure** (every component alone can fail the
           system): the product of the components' survival from their
@@ -3668,7 +3669,18 @@ class RepairableRBD(RBD):
         - **exponential lives and repairs** (or instant repairs), with any
           number of ``repair_crews``: the Markov chain of the components'
           states, with the states the system is down in made absorbing,
-          followed by uniformization (to about 1e-13).
+          followed by uniformization (to about 1e-13);
+        - **any other lives and repairs** (Weibull, gamma, lognormal, a
+          fitted model: anything with a distribution function), in the
+          same chain, each followed as phases: a mixture of Erlangs on a
+          grid of ages, which converges to the time itself as the grid is
+          refined. The grid is halved, and the values extrapolated, until
+          they agree to ``rtol``; an Erlang time (a gamma of whole shape)
+          has phases of its own and is exact. Each series factor of the
+          structure is chained alone, so what limits it is the largest
+          redundant part: two units that are not exponential, as a rule
+          (a few more over a short time), since the chain's states are
+          the product of its units' phases.
 
         A sub-system (a nested ``RepairableRBD``) is drawn into the
         diagram in its place, its components each as ``(node,
@@ -3677,9 +3689,10 @@ class RepairableRBD(RBD):
         common-cause, maintenance or shutdown groups in it, or a state
         given for it couple it.
 
-        Everything else (other lives or repairs in a redundant structure,
-        scheduled maintenance, tests of hidden failures, standby groups,
-        common-cause groups, a coupled sub-system) refuses and points to
+        Everything else (scheduled maintenance, tests of hidden failures,
+        standby groups, common-cause groups, a coupled sub-system, a
+        chain of phases too large or that does not settle to ``rtol``)
+        refuses and points to
         ``method="simulate"``, which reads the first failures off
         [`simulate_timelines`][repyability.RepairableRBD.simulate_timelines]:
         the share of simulations with no failure by each time; and to
@@ -3713,6 +3726,12 @@ class RepairableRBD(RBD):
         engine : {"auto", "python", "numba"}, optional
             With ``method="simulate"`` only: the engine, as for
             ``simulate_timelines``.
+        rtol : float, optional
+            Where lives or repairs are followed as phases: the accuracy
+            of the probability of failing by each time, as a share of
+            it, by default ``1e-3`` (for a probability under a thousandth
+            of the largest asked for, as a share of that thousandth). The
+            other routes are exact.
 
         Returns
         -------
@@ -3751,7 +3770,15 @@ class RepairableRBD(RBD):
         """
         _shutdowns.refuse(self, "first_failure_sf")
         return _first_failure.first_failure_sf(
-            self, x, state, method, t_simulation, mc_samples, seed, engine
+            self,
+            x,
+            state,
+            method,
+            t_simulation,
+            mc_samples,
+            seed,
+            engine,
+            rtol,
         )
 
     def mean_time_to_first_failure(
@@ -3763,6 +3790,7 @@ class RepairableRBD(RBD):
         seed: Optional[int] = None,
         engine: str = "auto",
         confidence: float = 0.95,
+        rtol: float = 1e-3,
     ):
         """The mean time until the first system failure.
 
@@ -3773,7 +3801,10 @@ class RepairableRBD(RBD):
         [`first_failure_sf`][repyability.RepairableRBD.first_failure_sf],
         which has the routes: exact for a series structure and for
         exponential lives and repairs (one linear solve over the Markov
-        chain's up states), and ``method="simulate"`` for the rest, with
+        chain's up states), the same solve with other lives and repairs
+        followed as phases (to ``rtol``; where the structure has several
+        series factors, the area under their product), and
+        ``method="simulate"`` for the rest, with
         [`mean_time_to_first_failure_bound`][repyability.RepairableRBD.mean_time_to_first_failure_bound]
         a lower bound without simulating.
 
@@ -3802,6 +3833,10 @@ class RepairableRBD(RBD):
         confidence : float, optional
             The confidence level of the simulated estimate's interval.
 
+        rtol : float, optional
+            Where lives or repairs are followed as phases: the relative
+            accuracy of the mean, by default ``1e-3``.
+
         Returns
         -------
         float or ConfidenceInterval
@@ -3829,6 +3864,7 @@ class RepairableRBD(RBD):
             seed,
             engine,
             confidence,
+            rtol,
         )
 
     def first_failure_bounds(self, t, state=None) -> FirstFailureBounds:
