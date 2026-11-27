@@ -1256,6 +1256,14 @@ def test_the_readme_says_what_is_simulated():
             (repairable["a shelf of spares"], "cost", "simulated"),
             (repairable["a shelf of spares"], "expected_cost", "refused"),
         ],
+        "A probability of failing per demand (fail to start) in a "
+        "repairable diagram": [
+            (repairable["demand"], "mean_availability", "exact"),
+            (repairable["demand"], "point_availability", "numerical"),
+            (repairable["demand"], "availability", "simulated"),
+            (repairable["fixed probability"], "mean_availability", "refused"),
+            (repairable["fixed probability"], "availability", "simulated"),
+        ],
         "Spares with repair crews, standby groups, opportunistic "
         "maintenance, imperfect repair or partial restoration": [
             (crew, "spares_stock", "refused"),

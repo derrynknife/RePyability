@@ -456,6 +456,7 @@ NODES: Dict[str, List[Tuple[str, str]]] = {
         ("A fitted Crow-AMSAA process", "fitted Crow-AMSAA process"),
         ("A fitted G1, ARA or ARI process", "fitted ARA process"),
         ("A probability per demand", "fixed probability"),
+        ("A probability per demand, with a demand rate", "demand"),
         ("A mixture life", "mixture life"),
         ("A fitted degradation process life", "degradation process life"),
         ("Operated part of the time (duty)", "operated part of the time"),

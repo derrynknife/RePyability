@@ -51,7 +51,9 @@ A component can be given as:
   its place in the queue for a repair crew (`"priority"`; see
   [below](#repair-crews)), imperfect repair (`"repair"` and
   `"replace_after"`; see [below](#imperfect-repair)), and the share of the
-  time it operates (`"duty"`; see [below](#operating-part-of-the-time)).
+  time it operates (`"duty"`; see [below](#operating-part-of-the-time)),
+  and the rate of demands on a probability of failing per demand
+  (`"demand_rate"`; see [below](#failing-on-demand)).
   Any other key raises
   `ValueError`, so a mistyped cost key is never silently priced at zero;
 - `"repairability": "instant"` for a component repaired in zero time (see
@@ -195,6 +197,52 @@ probability per demand, a mixture, a degradation process or a nested
 diagram is refused (give its life on the calendar instead). The duty is a
 fixed share of the time: a component that runs only while the system runs,
 or ages while idle too, needs that modelled in its life.
+
+### Failing on demand
+
+**In plain words:** a standby pump, valve or breaker may fail to start
+when it is called on, with a probability per demand (ISO 14224's "fail to
+start on demand"). On its own, that probability says nothing about time,
+so a repairable diagram cannot say how often the unit is down. Say how
+often the demands come with `"demand_rate"`, and it can.
+
+With `"reliability"` a `surpyval.FixedEventProbability` of `p` and
+`"demand_rate"` `d`, the demands arrive as a Poisson process of rate `d`
+(per unit of the diagram's time), and each fails a working unit with
+probability `p`. Its failures are then a Poisson process of rate `d p`:
+the unit has an exponential life of that rate, which every exact,
+numerical and simulated analysis takes, on both engines, as the diagram
+given that life would. A single unit repaired at rate `mu` is available
+`mu / (mu + d p)` in the long run.
+
+```python
+import surpyval as surv
+from repyability import RepairableRBD
+
+pump = {
+    "reliability": surv.FixedEventProbability.from_params(0.02),
+    "demand_rate": 0.5,  # demands per day
+    "repairability": surv.Exponential.from_params([1 / 2.0]),
+}
+rbd = RepairableRBD([("s", "pump"), ("pump", "t")], {"pump": pump})
+rbd.mean_availability()  # -> 0.98039
+```
+
+The spec keeps the probability and the rate as given: they are saved,
+listed by `levers()` (`reliability.p` in `[0, 1]`, `demand_rate` above
+0) and moved by `parameter_sensitivity`. A probability of 0 never fails,
+and the node is a [junction](#junctions). Without a demand rate, a
+probability per demand is simulated only (a unit fails at once with the
+probability, or never), and the exact analyses refuse it, naming the key.
+
+The demands come at random, at a rate: demands at fixed times (a
+geometric count) are not modelled. A unit that wears out while it runs
+and may also fail on a demand is two failure modes: draw them as two
+components in series, one with the life and one with the probability and
+the demand rate. A spare that may fail to start when a unit of its
+standby group fails is the group's `"switching_probability"` (see
+[Standby groups](#standby-groups)), and a duty is refused with a demand
+rate (give the rate on the calendar).
 
 ### Covariates that change over time
 
