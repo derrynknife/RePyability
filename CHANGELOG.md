@@ -30,6 +30,18 @@ release between minors that only adds (0.19.1).
   the nodes say where the part sits in the diagram, and the rate replaces
   their own. A part with a `"demand_rate"` that is no component of the
   diagram is needed by every system, as before.
+- A network of repaired elements is simulated: `Network.availability(t)`
+  runs its histories as a `RepairableRBD`'s `availability` does, as the
+  network's drawn diagram where it can be drawn (`to_rbd`) and otherwise
+  on the Python event loop with the connection found by a search along
+  the working links (both draw the same for a seed); so is a network too
+  large for its decision diagram. `first_failure_sf(x)` and
+  `mean_time_to_first_failure()` give the time to the first loss of the
+  connection, exactly for links in series and from the Markov chain of
+  the elements' states, and by `method="simulate"` otherwise. A network
+  with probabilities or lives that are not repaired refuses them, naming
+  the elements.
+
 - `Network.to_rbd()` draws a network of repaired elements as a
   `RepairableRBD`, each element a component with its spec, whose values
   over time and in the long run are the network's (to 1e-12; its mission

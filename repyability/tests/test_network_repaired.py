@@ -754,8 +754,10 @@ def test_a_repaired_network_too_large_says_what_can_be_done(monkeypatch):
     for method in OVER_TIME + ("failure_frequency",) + LONG_RUN:
         with pytest.raises(NotImplementedError) as error:
             getattr(net, method)(*(() if method in LONG_RUN else (1.0,)))
-        assert "MAX_STATES, can be raised" in str(error.value)
-        assert "method=" not in str(error.value)
+        assert "raise the limit, repyability.network.MAX_STATES" in str(
+            error.value
+        )
+        assert "availability(t)" in str(error.value)
         assert routes[method].route == "refused"
         assert routes[method].reason == str(error.value)
     assert routes["birnbaum_importance"].reason == str(error.value)

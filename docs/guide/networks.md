@@ -275,11 +275,27 @@ standby.mean_unavailability()        # -> 1.8541e-05   0.02 times the line's
   and it takes what the network does not, such as costs, crews,
   maintenance and spares (give its components the fuller specs). Every
   element must then be repaired.
+- **Simulated.** `availability(t)` simulates the connection over
+  `[0, t]` (`mc_samples` histories, seeded with `seed`), each element
+  failing and being repaired on its own, and returns a diagram's
+  `AvailabilityResult`: the availability over time, the losses of the
+  connection and each element's part in them. A network that can be drawn
+  runs as its `RepairableRBD`; any other (a bridge, a meshed network, one
+  too large to work out exactly) on the Python event loop, the connection
+  found by a search along the working links. Both draw the same numbers
+  for a seed.
+- **The first loss.** `first_failure_sf(x)` is the probability that the
+  connection is not lost by `x`, and `mean_time_to_first_failure()` the
+  mean time to its first loss: not `sf`'s, since an element can fail and
+  be repaired while the others keep the terminals joined. They are exact
+  for elements in series and from the Markov chain of the elements'
+  states (exponential lives and repairs, others as phases), and
+  `method="simulate"` reads each simulated history's first loss
+  otherwise. Both need every element repaired.
 - **Not yet.** A repaired network has no time at which its terminals part
   for good, so `sf`, `mean`, the B-lives and `random` refuse it; so do the
   levers, `parameter_sensitivity` and `tornado`. An element takes a life,
-  a repair and tests only (no preventive maintenance, crews or costs), and
-  a repaired network is not simulated.
+  a repair and tests only (no preventive maintenance, crews or costs).
 
 ## Capacity
 
