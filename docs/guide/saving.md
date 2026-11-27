@@ -73,7 +73,8 @@ A `FaultTree` saves the same way (`to_dict`, `to_json`, `from_dict`,
 `from_json`: its gates, events (a repaired event's spec as a diagram's
 component's) and common-cause groups), and so does a
 `Network` (#315): its terminals, each link's two nodes and model, and the
-failing nodes' models, the models as a diagram's nodes' are saved, under
+failing nodes' models, the models as a diagram's nodes' are saved (a
+repaired element's spec as a diagram's component's), under
 `"type": "Network"`. A model given as a probability is saved as the
 `FixedEventProbability` it is taken as; one that is not surpyval's cannot
 be saved.

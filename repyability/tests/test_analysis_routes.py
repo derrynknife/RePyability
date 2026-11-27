@@ -450,7 +450,10 @@ def test_every_analysis_is_called(kinds, calls):
 
 
 def uncertain_element(net):
-    """A link's first parameter known to within 5%."""
+    """A link's first parameter known to within 5% (none for a network
+    of repaired links, which refuses the analyses that take it)."""
+    if net.is_repairable:
+        return None
     for name, model in net.models.items():
         spec = parametric_spec(model)
         if spec is not None:
@@ -506,6 +509,21 @@ NETWORK_CALLS = {
     "bx_life_uncertainty": lambda net: net.bx_life_uncertainty(
         10, uncertain_element(net), n_draws=2, seed=1
     ),
+    # A network of repaired links' own.
+    **{
+        name: (lambda name: lambda net: getattr(net, name)(X))(name)
+        for name in (
+            "point_availability",
+            "point_unavailability",
+            "mission_availability",
+            "mission_unavailability",
+            "failure_frequency",
+            "expected_failures",
+        )
+    },
+    "mean_availability": lambda net: net.mean_availability(),
+    "mean_unavailability": lambda net: net.mean_unavailability(),
+    "system_failure_frequency": lambda net: net.system_failure_frequency(),
 }
 
 BRIDGE_LINKS = {
@@ -520,12 +538,28 @@ BRIDGE_LINKS = {
 def networks():
     """Networks of each kind: the bridge with lifetime models and a
     failing node, one of fixed probabilities, and the bridge with three
-    terminals, with every node a terminal, and with its links one way."""
+    terminals, with every node a terminal, and with its links one way;
+    and the bridge with repaired links and a repaired node, between two
+    terminals and between them all."""
     lifetimes = {
         name: (u, v, W([100 + 10 * i, 1.5]))
         for i, (name, (u, v)) in enumerate(BRIDGE_LINKS.items())
     }
+    repaired = {
+        name: (
+            u,
+            v,
+            {
+                "reliability": W([100 + 10 * i, 1.5]) if i % 2 else E([0.01]),
+                "repairability": E([0.5 + 0.1 * i]),
+            },
+        )
+        for i, (name, (u, v)) in enumerate(BRIDGE_LINKS.items())
+    }
+    hub = {"reliability": E([0.001]), "repairability": W([5.0, 2.0])}
     return {
+        "repaired bridge": Network(repaired, "s", "t", nodes={"x": hub}),
+        "repaired all terminals": Network(repaired, terminals="all"),
         "three terminals": Network(
             lifetimes, terminals=["s", "t", "x"], nodes={"x": E([0.01])}
         ),
