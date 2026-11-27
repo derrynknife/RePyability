@@ -28,6 +28,33 @@ release between minors that only adds (0.19.1).
   to 1). A group splitting the failure rate is still refused, now saying
   the format has no form for it.
 
+- `PhasedMission` takes repair during its phases (`repairability=`, on
+  the constructor and `from_diagram`: each repaired block's model of its
+  repair times). A repaired block is under repair from the moment it
+  fails and then runs again as good as new, whatever the phase by then,
+  so a phase's diagram can go down and come back: the mission fails at
+  the first instant the diagram of the phase under way is down, and at a
+  phase's start if its diagram is down then (it does not wait for a
+  repair). Exact where every life has a constant failure rate in every
+  phase and every repair is exponential: the mission's Markov chain over
+  the blocks' states, carried through the phases, a phase's down states
+  absorbing, which gives `reliability`, `phase_failure_probabilities`,
+  `reliability_over_time`, `expected_mission_time`, `failure_drivers`,
+  `summary`, the importance measures (a block held working, or failed
+  and never repaired), `parameter_sensitivity` and the levers (a repair
+  model's as `repairability.<name>`); one phase is
+  `RepairableRBD.first_failure_sf`. Other lives and repairs are
+  simulated, each repaired block's lives and repairs drawn as it fails
+  and comes back (`method="simulate"`, `reliability_interval`, `summary`,
+  `compare` with common random numbers), and the exact routes refuse,
+  naming the simulation. At one instant failures come before a phase's
+  start, and restorations after it. A repaired block is working or not
+  needed in each phase, is in no common-cause group, and a mission with
+  repairs takes no block on standby; Fussell-Vesely, Barlow-Proschan and
+  the cut sets refuse such a mission. Missions without repairs play as
+  before, to the last bit. Repair between phases or missions (a
+  turnaround) is not modelled.
+
 - `FaultTree.to_open_psa` and `FaultTree.from_open_psa` exchange trees of
   repaired and tested events. An event with an exponential life and
   repair is written as the format's `GLM` (no failure on demand), and a
