@@ -1,0 +1,224 @@
+"""Events that are repaired or tested, for a structure that is not drawn as
+a block diagram: a fault tree's (and a network's, which can take them the
+same way).
+
+Each event is a component spec, as a ``RepairableRBD`` takes one: its
+``"reliability"``, its ``"repairability"`` and, for a hidden failure found
+by periodic tests, its ``"inspection"``. Its curves come from the
+repairable machinery with no renewal code of its own: the events are the
+components of one ``RepairableRBD`` (``Structured``) whose structure is
+the owner's decomposition (a tree's decision diagram, repeated events and
+VOTE gates included), so that the diagram's values over time
+(``point_unavailability``, ``mission_unavailability``,
+``expected_failures``) and in the long run (``mean_unavailability``,
+``system_failure_frequency``) are the owner's. The events are independent
+(no crews or common-cause groups couple them), so the system's failure
+frequency at a time is ``sum_i I_B^i(t) w_i(t)``, ``w_i`` the event's
+failure intensity (``failing_at``).
+"""
+
+from typing import Any, Dict, Hashable, Mapping, Tuple
+
+import numpy as np
+
+from repyability.rbd import _curves, _rates, _windows
+from repyability.rbd._common import _constant_rate
+from repyability.rbd._model_utils import failure_time_scale
+from repyability.rbd._point_availability import curve_breaks, curve_grids
+from repyability.rbd.repairable_rbd import RepairableRBD
+
+#: The keys an event's spec may have: its life, its repair, and its tests.
+EVENT_SPEC_KEYS = ("reliability", "repairability", "inspection")
+
+
+def checked_spec(name: Hashable, spec: Mapping, convert: str) -> dict:
+    """An event's ``spec``, its keys checked (the values are checked as a
+    diagram's component's are, when ``Structured`` is built). Any other
+    key refuses, naming the diagram (``convert``) that takes it."""
+    unknown = set(spec) - set(EVENT_SPEC_KEYS)
+    if unknown:
+        raise ValueError(
+            f"Event {name!r} has key(s) {sorted(map(str, unknown))}: an "
+            f"event takes {', '.join(EVENT_SPEC_KEYS)} only. For costs, "
+            "preventive maintenance, standby units, spares and the rest, "
+            f"convert the structure with {convert} and give its "
+            "components the full spec."
+        )
+    return dict(spec)
+
+
+class Structured(RepairableRBD):
+    """A ``RepairableRBD`` of the events (in series, as drawn), evaluated
+    over ``structure``: a decomposition over the events working, which
+    stands for the diagram's own (see ``RBD._decomposition``)."""
+
+    def __init__(self, specs: Mapping[Hashable, dict], structure: Any):
+        names = list(specs)
+        taken = set(names)
+        ends = []
+        for base in ("input", "output"):
+            end = base
+            while end in taken:
+                end = f"{end}'"
+            taken.add(end)
+            ends.append(end)
+        nodes = [ends[0], *names, ends[1]]
+        super().__init__(
+            list(zip(nodes[:-1], nodes[1:])),
+            dict(specs),
+            input_node=ends[0],
+            output_node=ends[1],
+        )
+        # Built as a series diagram (every event relevant, each checked
+        # as a component), and evaluated over the structure from now on.
+        self._structure = structure
+
+    def _decomposition(self):
+        structure = self.__dict__.get("_structure")
+        return super()._decomposition() if structure is None else structure
+
+
+def _curves_to(
+    rbd: Structured, times: np.ndarray, counts: bool = False, past=1.0
+):
+    """Each event's curve over ``[0, past * max(times)]`` (counting its
+    events, with ``counts``), and the states they start from (new)."""
+    states = _curves._states(rbd, None, frozenset())
+    horizon = past * float(times.max()) if times.size else 0.0
+    curves = _curves._availability_curves(
+        rbd, horizon, frozenset(), counts=counts, state=states
+    )
+    return curves, states
+
+
+def down_at(rbd: Structured, times: np.ndarray) -> Dict[Hashable, Any]:
+    """Each event's probability of being down at the ``times``, worked out
+    in its own right (see ``_curves._nodes_down_at``)."""
+    curves, states = _curves_to(rbd, times)
+    return _curves._nodes_down_at(rbd, curves, times, states)
+
+
+class _Failures:
+    """A curve's expected failures since 0 as a curve of its own, on its
+    grids and breaks, for ``_rates.differences``."""
+
+    def __init__(self, curve):
+        self.curve = curve
+
+    def at(self, x: np.ndarray) -> np.ndarray:
+        return self.curve.events(np.asarray(x, dtype=float))["failures"]
+
+    def grids(self) -> list:
+        return curve_grids(self.curve)
+
+    def breaks(self, start: float, stop: float) -> np.ndarray:
+        return curve_breaks(self.curve, start, stop)
+
+
+def _typical_life(rbd: Structured) -> float:
+    """The shortest typical life of the events (see
+    ``failure_time_scale``), 1.0 if none has one."""
+    scales = [
+        failure_time_scale(component.reliability)
+        for component in rbd.components.values()
+    ]
+    scales = [x for x in scales if np.isfinite(x) and x > 0.0]
+    return min(scales) if scales else 1.0
+
+
+def failing_at(rbd: Structured, times: np.ndarray):
+    """Each event's probability of being down and its failure intensity
+    (its expected failures per unit time) at the ``times``. An event of
+    constant failure rate ``lambda`` fails at ``lambda`` while it works
+    (not under repair nor in a test), exactly ``lambda (1 - q(t))``; any
+    other's intensity is the rate of change of its expected failures,
+    by differences on its curve's grid (``_rates.differences``)."""
+    horizon = float(times.max()) if times.size else 0.0
+    scale = horizon if horizon > 0.0 else _typical_life(rbd)
+    # A little past the last time, for the differences there.
+    curves, states = _curves_to(rbd, times, counts=True, past=1.01)
+    down = _curves._nodes_down_at(rbd, curves, times, states)
+    intensity = {}
+    for node, curve in curves.items():
+        rate = _constant_rate(rbd.components[node].reliability)
+        if rate is not None:
+            intensity[node] = rate * (1.0 - down[node])
+        else:
+            intensity[node] = _rates.differences(
+                _Failures(curve), times, scale
+            )
+    return down, intensity
+
+
+def failure_frequency(rbd: Structured, times: np.ndarray) -> np.ndarray:
+    """The system's failure frequency at the ``times``: each event's
+    failure intensity where it is critical, ``sum_i I_B^i(t) w_i(t)``,
+    the Birnbaum importances at the events' availabilities then, from one
+    pass of the structure (see ``RBD._importances``)."""
+    down, intensity = failing_at(rbd, times)
+    size = len(times)
+    none: frozenset = frozenset()
+    probabilities = _windows._filled(
+        rbd, {node: 1.0 - q for node, q in down.items()}, size, none, none
+    )
+    failures = dict(down)
+    for node in rbd.in_or_out:
+        failures[node] = np.zeros(size)
+    importance = rbd._importances(probabilities, failures)[0]
+    total = np.zeros(size)
+    for node, rate in intensity.items():
+        total += importance[node] * rate
+    return total
+
+
+def down_routes(rbd: Structured) -> Dict[Hashable, Tuple[str, str]]:
+    """How each event's probability of being down at a time is worked
+    out (see ``routes.with_nodes``): in closed form for an exponential
+    life and repair, else from its curve, numerically."""
+    from repyability.rbd import routes as r
+
+    closed = _curves._closed_form_rates(rbd, None)
+    return {
+        node: (
+            (r.EXACT, "an exponential life and repair, in closed form")
+            if node in closed
+            else (
+                r.NUMERICAL,
+                "its renewal (or test) cycle's curve, on a grid",
+            )
+        )
+        for node in rbd.components
+    }
+
+
+def intensity_routes(
+    rbd: Structured, name: str
+) -> Dict[Hashable, Tuple[str, str]]:
+    """How each event's failure intensity is worked out for the analysis
+    ``name`` (see ``failing_at``): at a time, exactly for a constant
+    failure rate whose probability of being down is exact, else by
+    differences; in the long run, exactly; over a window, numerically."""
+    from repyability.rbd import routes as r
+
+    if name == "system_failure_frequency":
+        return {
+            node: (r.EXACT, "its long-run failure frequency")
+            for node in rbd.components
+        }
+    if name == "expected_failures":
+        return {
+            node: (r.NUMERICAL, "its renewal equation, on a grid")
+            for node in rbd.components
+        }
+    closed = _curves._closed_form_rates(rbd, None)
+    return {
+        node: (
+            (r.EXACT, "its constant rate while it works")
+            if node in closed
+            else (
+                r.NUMERICAL,
+                "differences of its expected failures on its curve's grid",
+            )
+        )
+        for node in rbd.components
+    }
