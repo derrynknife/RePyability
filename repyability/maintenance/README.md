@@ -87,7 +87,7 @@ Not yet single:
 | UC-65 | One pump's plan valued alone: its NPV over eight years at 7%, its cash flows by year, its spread, its plan against what happened, its long-run cost and best interval; with its salvage, its prices' growth and its retirement on the plan | **Built**: `UnitPlan.expected_npv`, `cash_flows`, `npv_distribution`, `plan_vs_actual`, `expected_cost`, `expected_cost_rate`, `events_by_period`, `failures_by_period`, `optimal_replacement_interval`, `optimal_inspection_interval` and `analysis_routes`, each its one-node diagram's (`UnitPlan.diagram`), on a `CalendarContext` if given; `UnitPlan(salvage=, escalation=, retire_at=)` and the spec keys of the same names |
 | UC-59 | A part renewed at a short stop every month and again at the long yearly overhaul, each renewal as long as its shut | **Built**: a `"preventive"` spec's `"shutdown"` as a list of shutdowns, exact over a horizon |
 | UC-60 | A part upgraded in year 3 and block-replaced before and after, the new model on the same interval | **Built**: an `"upgrade"` with a `"preventive"` block policy, numerical over a horizon and simulated |
-| UC-72 | A part upgraded in year 3 that is age-replaced or tested, swapped at the upgrade or kept in service until it next comes out | **Built**: an `"upgrade"` with a `"preventive"` age policy or an `"inspection"`, numerical over a horizon (tests and repairs in no time, or of fixed lengths, tests that miss too) and simulated; `"replace_in_service": False` numerical over a horizon with no task, age or block replacement, or tests and repairs in no time that find every failure, simulated with other tests |
+| UC-72 | A part upgraded in year 3 that is age-replaced or tested, swapped at the upgrade or kept in service until it next comes out | **Built**: an `"upgrade"` with a `"preventive"` age policy or an `"inspection"`, numerical over a horizon (tests and repairs of any length, tests that miss too) and simulated; `"replace_in_service": False` numerical over a horizon with no task, age or block replacement, or tests |
 | UC-66 | A pump whose seal is a redundant pair, replaced whole when both have failed: its life is a diagram | **Built**: a `NonRepairableRBD` as a life wherever a life is taken (`UnitPlan`, a spec's `"reliability"`, `NonRepairable`), by its functions; `NonRepairableRBD.qf` inverts its `ff` to near machine precision |
 | UC-64 | What a part costs per year once upgraded: the long run of the diagram with the new life, the time before the upgrade ignored | **Built**: the long-run methods of a diagram with an `"upgrade"` give the values of the diagram after it |
 | UC-68 | "95% sure": the least spend that keeps a bad year's downtime (hours or cost) under a limit, with the frontier and both planned and unplanned downtime | **Built** (simulated): `RepairableRBD.least_spend_for_downtime` and `UnitPlan.least_spend_for_downtime`, with redundancy, interval, test-interval, upgrade, crew and call-out levers, and parameter uncertainty (`uncertainty=`); risk measures in `repyability.value._risk` |
@@ -3672,8 +3672,12 @@ a shelf across levels, and the compiled engine's shelf.
   The tests and repairs being of fixed lengths, each of those is a test
   before the upgrade, with its row's chances (`TestedCurve.under_way`),
   and the curve from each a new unit's put into service then
-  (`TestedUnit.curve`'s `("back", left)`); tests or repairs of varying
-  length are simulated. With `"replace_in_service": False`
+  (`TestedUnit.curve`'s `("back", left)`); of varying length, what is
+  left of each is a distribution (the test's, or the test's and the
+  repair's together, given that they are not over by the upgrade,
+  `_hidden_tests._Spread`), and the units back from all of one kind
+  are one mixture, put into service by it. With
+  `"replace_in_service": False`
   the unit stays until its next failure or due replacement (its age,
   its block time, or a test that finds it failed), and the unit put in
   then has the new life. Over a horizon, with no task or under age
@@ -3699,9 +3703,16 @@ a shelf across levels, and the compiled engine's shelf.
   failure, the renewals are at the tests: the component's own curve,
   less the renewal curve of the renewals from the upgrade whose unit
   was put in before it with the old life, plus theirs with the new
-  (`_curves._kept_tested_curve`, `SwitchedCurve`). With other tests a
-  unit kept is simulated, the values over a horizon refused with the
-  simulation to run. The simulation draws each life from the
+  (`_curves._kept_tested_curve`, `SwitchedCurve`). With tests or
+  repairs that take time, or tests that miss, the same holds of the
+  first unit of each line put into service from the upgrade on: up to
+  it the component is its own tested unit, and from it a new unit's
+  line, of the old life or the new (`_curves._kept_timed_curve`).
+  Those units are what the tests before the upgrade that found
+  failures put in after it, and what the tests after it that find a
+  unit put in before it put in; the tests after it that find failures,
+  `r_n`, less the first cycles of the former and the cycles from
+  earlier such tests, are the latter (`_hidden_tests.kept_starts`). The simulation draws each life from the
   life in service when it starts (UC-52); with tests, the unit put in
   before the upgrade is replaced at the upgrade or, off line for a test
   then, once the test is over (`_event_loop._swapped_at`). The long run
@@ -3771,9 +3782,14 @@ a shelf across levels, and the compiled engine's shelf.
     curves swapped from the old life to the new.
   - Tests that take time, or miss failures, on an upgraded part that is
     swapped are followed on each side of the upgrade with tests and
-    repairs of fixed lengths (the default); of varying length, what is
-    left of them at the upgrade is a distribution, and they are
-    simulated. A unit kept with such tests is simulated too.
+    repairs of fixed lengths; of varying length, what is left of them at
+    the upgrade is a distribution, taken as a spread restart, as a
+    repair under way at 0 is. A unit kept with such tests follows by
+    linearity from the first unit of each line put in from the upgrade:
+    those units come from the tests that find failures, the ones before
+    the upgrade (a few restarts cut at it) and those after it that find
+    a unit put in before it (`r_n` less what the units put in from the
+    upgrade make up).
   - Building this found that a mixture of curves from the upgrade
     (`MixedCurve`) took itself to settle to a constant, though a tested
     unit's repeats every test interval: a memoryless tested unit's
