@@ -1387,6 +1387,39 @@ class TestedCurve:
             inspections=self._whole(self.rows.inspected, tests).reshape(shape),
         )
 
+    def under_way(self, at: float) -> List[Tuple[float, float, bool]]:
+        """With tests and repairs of fixed lengths, what is under way at
+        ``at`` (after 0) that keeps the unit down past it: for each test
+        before ``at`` whose unit is not back by then, ``(left, chance,
+        planned)``, the time from ``at`` until a unit is back in service,
+        the chance of it, and whether it is a working unit off line for
+        its test (``planned``; a test over at ``at`` too, ``left`` 0) or
+        a failure the test found, in the test and then its repair; and
+        the repair the unit started in, if it is not over by ``at``. Each
+        test's chances are its row's (``tested`` and ``found``)."""
+        D = self.setup.test.fixed or 0.0
+        R = self.setup.fix.fixed or 0.0
+        out: List[Tuple[float, float, bool]] = []
+        if self.first_restart is not None and self.first_restart.atom:
+            lag, offset = self.first_restart.atom
+            back = lag * self.interval + offset - (self.interval - self.first)
+            if back > at:
+                out.append((back - at, 1.0, False))
+        count = int(self._tests_before(np.array([float(at)]))[0])
+        if count < 1:
+            return out
+        k = np.arange(1, count + 1)
+        times = self._test_time(k)
+        index = self._index(k)
+        for when, row in zip(times, index):
+            if self.timed and when + D >= at:
+                out.append((when + D - at, float(self.rows.tested[row]), True))
+            if when + D + R > at:
+                out.append(
+                    (when + D + R - at, float(self.rows.found[row]), False)
+                )
+        return [part for part in out if part[1] > 0.0]
+
     def atoms(self, stop: float) -> Atoms:
         """The tests before ``stop`` that take the unit off line (with a
         time model): each a planned outage of the unit working at it."""
@@ -1617,7 +1650,10 @@ class TestedUnit:
         for ``n >= k0`` (see ``TestedCurve``); from ``start``: None, new at
         0; ``("alive", age, since)``, up at 0 of age ``age``, known up
         ``since`` before 0 (at its last test, or when put into service);
-        ``("down", down_for)``, in a repair under way for ``down_for``; or
+        ``("down", down_for)``, in a repair under way for ``down_for``;
+        ``("back", left)``, down until a new unit is put into service
+        ``left`` after 0 (a unit replaced at an upgrade once the test or
+        repair it is in is over, see ``TestedCurve.under_way``); or
         ``"stationary"``, in its long-run state.
 
         Raises
@@ -1672,6 +1708,9 @@ class TestedUnit:
                 np.ravel(_values(life.sf, np.array([age - since])))[0]
             )
             alive = (age + float(first), 1.0 / known, age)
+        elif start[0] == "back":
+            frame = T - float(first)
+            first_restart = _Restart.at(setup, frame + float(start[1]))
         else:
             frame = T - float(first)
             repair = setup.fix
