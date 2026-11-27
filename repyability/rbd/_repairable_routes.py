@@ -321,7 +321,11 @@ def analysis_routes(rbd) -> Dict[str, "AnalysisRoute"]:
         (
             r.refused(first_failure)
             if first_failure
-            else r.AnalysisRoute(r.NUMERICAL, _first_failure.exact_route(rbd))
+            else r.AnalysisRoute(
+                r.NUMERICAL,
+                _first_failure.exact_route(rbd),
+                may_refuse=_first_failure.may_refuse(rbd),
+            )
         ),
     )
     give(

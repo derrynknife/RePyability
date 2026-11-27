@@ -12,6 +12,56 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- `AnalysisRoute.may_refuse`: for a route that is not refused but whose
+  call can still refuse depending on what is asked, when it does and
+  what to use instead (`analysis_routes()` prints it as "numerical (may
+  refuse)"). The first failure's routes by a chain, and by phases (whose
+  values may not settle to `rtol`), say so.
+
+- A fault tree with common-cause groups over repaired events gives its
+  failure frequency at a time, `failure_frequency(t)`, and its
+  probability-based measures at a time (Birnbaum, criticality, RAW, RRW,
+  Fussell-Vesely, improvement potential, joint and differential
+  importance, `ranked_cut_sets` and `conditional_probabilities`), which
+  were refused. The frequency counts each event outside the groups where
+  it is critical over the groups' joint states at `t`, from their
+  chains, and each cause at its rate times the rise its strike makes in
+  the top event's probability; the measures hold an event outside the
+  groups occurred and not and condition a member on its state through
+  its group's joint states then, each group within the smallest part of
+  the tree holding its members, as a `RepairableRBD`'s measures at a
+  time do. Checked: each measure against `to_repairable_rbd()`'s at the
+  same times to 1e-12 (within 3e-14), repaired and tested members; the
+  frequency against the pair's four-state Markov chain to 1e-12, and at
+  a late time against `system_failure_frequency()`; its integral against
+  `expected_failures` (1e-6); and against 20,000 seeded simulations of
+  the diagram over 300 h, 0.2284 top events against 0.2229 (-1.7 SE),
+  and the top event given a member down at 250 h, 0.0696 against 0.0671
+  (-0.2 SE). Trees without such groups give the same values to the bit.
+  `to_open_psa()` still refuses such a tree, the format's groups
+  splitting probabilities, not rates.
+- `SafetyFunction.vote(k, *functions, beta=..., beta_detected=...,
+  beta_safe=...)`: a vote of votes (a 2oo4 arrangement wired as 1oo2 of
+  2oo2, say), each function voted on a vote, a vote of votes or votes in
+  series, with a cause shared by every channel beneath the vote. It acts
+  when `k` of the functions act and trips spuriously when `k` of them
+  trip. Checked against the multi-phase Markov chain of the four channels
+  (1e-8) and against the plain vote where each function is one channel
+  (equal).
+- `SafetyFunction.to_dict`, `from_dict`, `to_json` and `from_json`: a
+  function saved with each channel once (its models in surpyval's
+  format) and rebuilt through its constructors.
+- `SafetyFunction.measure_uncertainty(measure, uncertainty)`: the PFDavg,
+  the PFH or the spurious-trip rate over uncertain channel rates (from
+  distributions, or a fitted life from its fit), as an
+  `UncertaintyResult`.
+- `SafetyFunction.simplified_formulas()` takes a proof test that can miss
+  (IEC 61508-6 B.3.2.5: `PTC T1 + (1 - PTC) T2` for `T1` in the down
+  times and the common cause), which it refused. Its PFDavg reproduces
+  the fifteen subsystem values of a published worked example (The 61508
+  Association's "SIL Calculations" slides, 2024) to the three figures
+  printed; the guide sets them beside the exact values.
+
 - A cold standby pair with one repair at a time and a switch that can
   fail (`"switching_probability"` below 1) is followed over time, from
   new or from its long-run state, which was refused: `point_availability`,
@@ -1164,6 +1214,28 @@ release between minors that only adds (0.19.1).
 
 ### Fixed
 
+- `FaultTree.failure_frequency(t)` and `Network.failure_frequency(t)`
+  with repaired events gave NaN at `t = 0` where an event whose density
+  starts infinite (a Weibull life of shape below 1) was not critical
+  (a mixed bridge's, for one): its infinite intensity met an importance
+  of 0. The frequency at 0 is now the initial failure intensity, each
+  event at its life's density at 0 where it is critical and nothing
+  where it is not; a repaired event's intensity at 0 is its life's
+  density exactly, where the differences on its curve gave about it
+  (-5.6e-8 for a Weibull of shape 1.5, 1.55 for one of shape 0.8).
+
+- `first_failure_sf` and `mean_time_to_first_failure` with lives or
+  repairs followed as phases refused small redundant diagrams the guide
+  works out (`NotSettled`): the pair of Weibull lives and lognormal
+  repairs in the guide, at 300, 1000 and 2000 hours, needed a grid finer
+  than its steps were allowed to follow to 2000 hours. Each time is now
+  taken to finer grids only until its own value settles, with the chain
+  followed only to the times still unsettled (a short time settles on
+  finer grids than a long one, and those are cheap), and the work a chain
+  may take is 1e10 steps-times-transitions, up from 3e9. The guide's pair
+  now gives 0.99927, 0.98477 and 0.95649 in about ten seconds. A time
+  asked beside others now gets the value it gets asked alone, which can
+  move a value that settled before by less than `rtol`.
 - The values over a horizon of an upgraded component with tests in no
   time took its curve from the upgrade on to settle to a constant once
   it had settled, where a tested unit's repeats every test interval: a

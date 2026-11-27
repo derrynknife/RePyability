@@ -246,6 +246,9 @@ Which analyses each model type has (the method; — where it has none):
 | Spurious-trip rate | — | `SafetyFunction.spurious_trip_rate` | — | — | — | — |
 | SIL band, safe failure fraction | — | `SafetyFunction.sil` | — | — | — | — |
 | Every result in one call, votes in series | — | `SafetyFunction.results` | — | — | — | — |
+| Votes of votes (2oo4 as 1oo2 of 2oo2) | — | `SafetyFunction.vote` | — | — | — | — |
+| A result over uncertain failure rates | — | `SafetyFunction.measure_uncertainty` | — | — | — | — |
+| Saving and loading (dict, JSON) | — | `SafetyFunction.to_dict` | — | — | — | — |
 | IEC 61508-6's simplified formulas, to compare | — | `SafetyFunction.simplified_formulas` | — | — | — | — |
 | How each result is computed | — | `SafetyFunction.analysis_routes` | — | — | — | — |
 | **Importance measures** | | | | | | |
@@ -430,9 +433,11 @@ places, nested diagrams):
   repaired: the top event's unavailability over time, its average over a
   window and in the long run (with no life that is not repaired), and,
   for a coherent tree, its failure frequency and expected occurrences,
-  from the tree's own decision diagram over the events' curves; with
-  common-cause groups of repaired events with exponential lives, the
-  groups' chains conditioned on module by module.
+  from the tree's own decision diagram over the events' curves, and the
+  importance measures at a time; with common-cause groups of repaired
+  events with exponential lives, the groups' chains conditioned on
+  module by module, for the measures and the failure frequency at a
+  time too.
 
 **Simulated**, or refused with the simulation to run instead:
 

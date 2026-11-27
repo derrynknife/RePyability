@@ -155,6 +155,32 @@ whole = SafetyFunction.series(function, valves)
 whole.pfd_avg()   # -> 2.7774e-03
 ```
 
+### Votes of votes
+
+Some arrangements are votes of votes: four transmitters wired as two
+pairs, each pair voting 2oo2 and the pairs 1oo2, act while either pair
+has both channels working, which is not the 2oo4 vote of the four.
+`SafetyFunction.vote(k, *functions)` votes on functions, each a vote, a
+vote of votes or votes in series, and draws the whole into one dangerous
+and one safe diagram. The function trips spuriously when `k` of the
+functions voted on trip. A `beta` given to the outer vote is a cause
+shared by every channel beneath it.
+
+```python
+pair_a = SafetyFunction({"a1": transmitter, "a2": transmitter}, k=2)
+pair_b = SafetyFunction({"b1": transmitter, "b2": transmitter}, k=2)
+pairs = SafetyFunction.vote(1, pair_a, pair_b, beta=0.05)
+pairs                         # SafetyFunction(1oo2(2oo2, 2oo2); ...)
+pairs.pfd_avg()               # -> 8.0068e-04
+pairs.spurious_trip_rate()    # -> 7.9994e-10
+four = SafetyFunction({c: transmitter for c in "wxyz"}, k=2, beta=0.05)
+four.pfd_avg()                # -> 4.4284e-04   the 2oo4 vote
+four.spurious_trip_rate()     # -> 2.3996e-09
+```
+
+IEC 61508-6's 1oo2D (a channel's diagnostics changing the vote on a
+detected failure) is not one of these, and is not built.
+
 ## The simplified formulas, beside the exact values
 
 IEC 61508-6 Annex B gives formulas for 1oo1, 1oo2, 2oo2, 2oo3 and 1oo3
@@ -242,6 +268,39 @@ voted.pfh()                           # -> 7.9104e-06
 voted.simplified_formulas().pfh       # -> 1.0531e-05   33% high
 ```
 
+### A published worked example
+
+The 61508 Association's workshop slides "SIL Calculations: Practical
+Guidance in the use of IEC 61508-6:2010" (I. Dolan, 2024, openly
+available at 61508.org) work Annex B's formulas through a HIPPS function:
+2oo3 pressure transmitters, 2oo3 input modules, 1oo2 processors and
+output modules, and 1oo2 valve assemblies, proof-tested yearly. Their
+subsystem PFDavg values, on slide 11 as given, on slide 14 with the 2oo3
+votes' betas times 1.5 (IEC 61508-6 Table D.5), and on slide 21 with
+proof test coverage, are each reproduced by `simplified_formulas()` to the
+three figures printed (taking MRT as the MTTR, which the slides do not
+state, and T2 as 10 years for slide 21, which reproduces all five):
+
+| Subsystem | Slide 11 | formulas | exact | Slide 21 (PTC) | formulas | exact |
+|---|---|---|---|---|---|---|
+| Transmitters, 2oo3 | 2.36e-04 | 2.3576e-04 | 2.3538e-04 | 6.76e-04 | 6.7606e-04 | 6.6926e-04 |
+| Input modules, 2oo3 | 6.97e-07 | 6.9668e-07 | 6.8357e-07 | 1.21e-06 | 1.2107e-06 | 1.1910e-06 |
+| Processors, 1oo2 | 5.34e-07 | 5.3395e-07 | 4.8196e-07 | 6.12e-07 | 6.1158e-07 | 5.5947e-07 |
+| Output modules, 1oo2 | 6.68e-07 | 6.6846e-07 | 6.3313e-07 | 7.76e-07 | 7.7642e-07 | 7.4092e-07 |
+| Valve assemblies, 1oo2 | 1.05e-03 | 1.0488e-03 | 1.0261e-03 | 2.71e-03 | 2.7138e-03 | 2.5979e-03 |
+
+The exact values are 0.2% to 11% below the formulas. The processors' gap
+is the third way above: their detected failures' common cause is a fifth
+of the value, and the formula counts a whole MTTR where the vote is back
+at the first of two repairs. The slides give no PFH; the PFH formulas
+follow Lundteigen and Rausand's slides on the PFH (NTNU, chapter 9,
+slides 31 to 34), which write them out term by term as the code does.
+
+A proof test that can miss (`proof_test_coverage` PTC, everything found
+every `full_test` T2) takes `PTC T1 + (1 - PTC) T2` in place of `T1` in
+the down times and the common-cause term (B.3.2.5), as slide 18 writes
+it. The PFH takes the same down times; no published number checks that.
+
 The spurious-trip rate's rare-event form (`N λS` for 1ooN, `2 λS² MTTR`
 for 2oo2, `6 λS² MTTR` for 2oo3, plus `βS λS` where two failures are
 needed) is within 0.01% of the exact rate here without common cause. With
@@ -254,14 +313,42 @@ pair.spurious_trip_rate()                       # -> 9.4993e-06
 pair.simplified_formulas().spurious_trip_rate   # -> 1.0000e-05
 ```
 
+## Uncertain rates
+
+A failure rate is an estimate. `measure_uncertainty(measure,
+uncertainty)` draws the rates from distributions (or a fitted life from
+its fit) and gives the PFDavg, the PFH (`"pfh"` or `"pfh_undetected"`)
+or the spurious-trip rate of each draw, as an `UncertaintyResult`.
+Channels sharing a cause are one population, drawn alike:
+
+```python
+from scipy import stats
+
+rate = stats.gamma(3, scale=1 / 1.5e6)   # 3 failures in 1.5e6 hours
+result = function.measure_uncertainty(
+    "pfd_avg", {("a", "b", "c"): {"dangerous_undetected": rate}},
+    n_draws=50, seed=1,
+)
+result.nominal          # -> 1.1227e-03
+result.interval(0.9)    # -> (3.300e-04, 3.019e-03)
+```
+
+The betas are taken as given.
+
+## Saving
+
+`to_dict()`/`from_dict()` and `to_json()`/`from_json()` save a function
+(its votes, how they are joined, and each channel once, its models in
+surpyval's format) and rebuild it through its constructors.
+
 ## How each value is worked out
 
 `function.analysis_routes()` says, without running anything, whether each
 result is exact, numerical or refused, as the diagrams' own reports do.
 The simplified formulas are refused, with the reason, for a vote the annex
-has no formula for, channels that differ, a life with no constant rate, a
-proof test that can miss, and votes in series; the exact values hold for
-all of those.
+has no formula for, channels that differ, a life with no constant rate,
+votes in series and votes of votes; the exact values hold for all of
+those.
 
 ```python
 function.analysis_routes()["pfh"].route   # 'numerical'

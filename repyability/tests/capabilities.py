@@ -283,6 +283,23 @@ CAPABILITIES: List[Tuple[str, List[Tuple[str, Tuple[str, ...]]]]] = [
                 ("SafetyFunction.results", "SafetyFunction.series"),
             ),
             (
+                "Votes of votes (2oo4 as 1oo2 of 2oo2)",
+                ("SafetyFunction.vote",),
+            ),
+            (
+                "A result over uncertain failure rates",
+                ("SafetyFunction.measure_uncertainty",),
+            ),
+            (
+                "Saving and loading (dict, JSON)",
+                (
+                    "SafetyFunction.to_dict",
+                    "SafetyFunction.from_dict",
+                    "SafetyFunction.to_json",
+                    "SafetyFunction.from_json",
+                ),
+            ),
+            (
                 "IEC 61508-6's simplified formulas, to compare",
                 ("SafetyFunction.simplified_formulas",),
             ),

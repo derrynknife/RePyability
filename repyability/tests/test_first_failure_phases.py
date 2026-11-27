@@ -213,6 +213,27 @@ def test_the_levels_stop_at_the_accuracy_asked_for(monkeypatch):
     assert taken[:loose] == list(_phase_type.LEVELS[:loose])
 
 
+def test_each_time_is_taken_finer_only_until_it_settles(monkeypatch):
+    # A time short against the life settles at finer levels than a long
+    # one: those levels are worked out for it alone, their chains
+    # followed only to it, and each value is the one asked alone.
+    rbd = pair(W([100.0, 1.5]), E([0.2]))
+    taken = []
+    built = _first_failure._Factored
+
+    def counted(rbd, states, level, horizon):
+        taken.append((level, horizon))
+        return built(rbd, states, level, horizon)
+
+    monkeypatch.setattr(_first_failure, "_Factored", counted)
+    both = rbd.first_failure_sf([5.0, 150.0])
+    levels = [level for level, _ in taken]
+    assert levels == list(_phase_type.LEVELS[: len(levels)])
+    assert taken[0][1] == 150.0 and taken[-1][1] == 5.0
+    alone = [rbd.first_failure_sf([5.0]), rbd.first_failure_sf([150.0])]
+    assert both == pytest.approx(np.concatenate(alone), rel=1e-12)
+
+
 def test_the_series_factors_are_chained_each_alone():
     wear, repair = W([100.0, 2.0]), E([0.1])
     unit = {"reliability": wear, "repairability": repair}
@@ -315,6 +336,19 @@ def test_the_route_says_the_phases_are_numerical():
     ]
     assert route.route == "numerical"
     assert "phases" in route.reason
+    # Whether the values settle depends on the times and rtol asked, so
+    # the route says that the call may refuse, and what to use instead.
+    assert "NotSettled" in route.may_refuse
+    assert "method='simulate'" in route.may_refuse
+    assert "(may refuse)" in str(
+        pair(W([100.0, 2.0]), E([0.1])).analysis_routes()
+    )
+    # A series structure's values are always given.
+    series = RepairableRBD(
+        [("s", "a"), ("a", "t")],
+        {"a": {"reliability": W([100.0, 2.0]), "repairability": E([0.1])}},
+    )
+    assert series.analysis_routes()["first_failure_sf"].may_refuse == ""
 
 
 # -- the phases themselves ----------------------------------------------------

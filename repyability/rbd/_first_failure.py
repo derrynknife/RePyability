@@ -79,7 +79,7 @@ from repyability.utils.vectors import dot
 #: The most steps uniformization takes, and the most work (steps times the
 #: chain's transitions) it does before the chain is given up on.
 MAX_STEPS = 2_000_000
-MAX_WORK = 3e9
+MAX_WORK = 1e10
 #: The most states of a chain whose lives or repairs are followed as
 #: phases.
 MAX_PHASE_STATES = 400_000
@@ -538,6 +538,25 @@ _ROUTES = {
 }
 
 
+_MAY_REFUSE = {
+    AS_CHAIN: "the chain is followed by uniformization, in steps that "
+    "grow with the times asked and with its fastest rate, and is refused "
+    "when they are too many (or the chain too large) for the times "
+    "asked.",
+    AS_PHASES: "the values are refused (NotSettled, a NotImplementedError) "
+    "when they do not settle to rtol within the chain's size and the "
+    "steps it can take, which grow with the times asked: a looser rtol "
+    "takes them, method='simulate' estimates them, and "
+    "first_failure_bounds brackets them.",
+}
+
+
+def may_refuse(rbd) -> str:
+    """When the exact values can still be refused once asked for (the
+    route's ``may_refuse``): "" for a series structure."""
+    return _MAY_REFUSE.get(_require_exact(rbd), "")
+
+
 def exact_route(rbd) -> str:
     """How the exact values are worked out, for ``analysis_routes``."""
     how = _ROUTES[_require_exact(rbd)]
@@ -923,20 +942,30 @@ def _check_rtol(rtol) -> float:
     return float(rtol)
 
 
-def _by_phases(rbd, states: dict, value, horizon: float, rtol, size):
-    """``value(_Factored)`` at the levels of phases, extrapolated until
-    it agrees to ``rtol * size(value)`` (``_phase_type.converged``)."""
-    first = _Factored(rbd, states, _phase_type.LEVELS[0], horizon)
+def _by_phases(
+    rbd, states: dict, value, horizon, count: int, rtol, size
+) -> np.ndarray:
+    """``value(_Factored, which)``, the ``count`` values ``which`` of a
+    level's chains, at the levels of phases, each extrapolated until it
+    agrees to ``rtol * size(values)`` (``_phase_type.converged``); a
+    level's chains are followed to ``horizon(which)``, the ages the
+    values not yet settled reach."""
+    every = np.arange(count)
+    first = _Factored(rbd, states, _phase_type.LEVELS[0], horizon(every))
     return _phase_type.converged(
-        lambda level: value(
-            first
-            if level == _phase_type.LEVELS[0]
-            else _Factored(rbd, states, level, horizon)
+        lambda level, which: value(
+            (
+                first
+                if level == _phase_type.LEVELS[0]
+                else _Factored(rbd, states, level, horizon(which))
+            ),
+            which,
         ),
         rtol,
         size,
         first.exact,
         _SIMULATE,
+        count,
     )
 
 
@@ -962,15 +991,17 @@ def _exact_sf(rbd, x: np.ndarray, state, rtol: float) -> np.ndarray:
     if how == AS_PHASES and not stationary:
         if x.size == 0:
             return np.zeros(x.shape)
+        flat = x.ravel()
         survival = _by_phases(
             rbd,
             states,
-            lambda factored: factored.sf(x),
-            float(x.max()),
+            lambda factored, which: factored.sf(flat[which]),
+            lambda which: float(flat[which].max()),
+            flat.size,
             rtol,
             _failing_size,
         )
-        return np.clip(survival, 0.0, 1.0)
+        return np.clip(survival, 0.0, 1.0).reshape(x.shape)
     try:
         return _chain(rbd, states).sf(x)
     except _phase_type.Unaffordable as error:
@@ -991,11 +1022,12 @@ def _exact_mean(rbd, state, rtol: float) -> float:
             _by_phases(
                 rbd,
                 states,
-                lambda factored: np.array(factored.mean()),
-                math.inf,
+                lambda factored, which: np.array([factored.mean()]),
+                lambda which: math.inf,
+                1,
                 rtol,
                 lambda value: np.maximum(np.abs(value), _FLOOR),
-            )
+            )[0]
         )
     return _chain(rbd, states).mean()
 
