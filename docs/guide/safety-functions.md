@@ -140,6 +140,13 @@ tripping.pfh()                  # -> 2.8278e-07
 tripping.spurious_trip_rate()   # -> 8.0258e-07
 ```
 
+A channel holding an undetected failure is still counted dangerous while
+a detected failure has it voting to trip, which is conservative: each
+channel's chance of being dangerous is high by the factor `1 + λDD
+MTTR`, the PFDavg of a vote one or two failures from the function's
+(1oo1, 1oo2) by exactly `(1 + λDD MTTR)^(N - M + 1)` without common
+cause, here `1.00024` and `1.00048`.
+
 ### Votes in series
 
 Sensors, a logic solver and final elements are votes in series: the
@@ -178,8 +185,11 @@ four.pfd_avg()                # -> 4.4284e-04   the 2oo4 vote
 four.spurious_trip_rate()     # -> 2.3996e-09
 ```
 
-IEC 61508-6's 1oo2D (a channel's diagnostics changing the vote on a
-detected failure) is not one of these, and is not built.
+IEC 61508-6's 1oo2D (two channels voting 2oo2 that degrade to the
+channel without a detected fault, and go to the safe state on faults in
+both or a discrepancy no diagnostic places) is not one of these, and is
+not built: the annex's formulas weigh the detected failures by a factor
+`K` that no openly available text defines.
 
 ## The simplified formulas, beside the exact values
 
@@ -299,7 +309,21 @@ slides 31 to 34), which write them out term by term as the code does.
 A proof test that can miss (`proof_test_coverage` PTC, everything found
 every `full_test` T2) takes `PTC T1 + (1 - PTC) T2` in place of `T1` in
 the down times and the common-cause term (B.3.2.5), as slide 18 writes
-it. The PFH takes the same down times; no published number checks that.
+it, and as Rausand and Lundteigen's slides on imperfect proof testing
+(NTNU, chapter 11, slides 13 to 18) write each koon formula out. The PFH
+takes the same down times; no published number checks that, and against
+the exact values it holds as far as the substitution does:
+
+- **One failure from the function's** (1oo2, 2oo3), the PFH is the rate
+  times the chance that another channel is down, whose average is what
+  the substitution gives: the formula is right to first order, its gap
+  to `pfh(undetected_only=True)` falling tenfold with the rate (0.25%
+  for 1oo2 at `λDU = 2e-7`, PTC = 90%, T2 = 5 T1, and 0.025% at `2e-8`).
+- **Two other channels down at once** (the PFDavg of 1oo2, the PFH of
+  1oo3), the formula takes the square of the average wait where the
+  exact value averages the square of the wait, which is longer after a
+  missed failure: the formulas are high by `T_eff² / (3 E[w²])` however
+  small the rate, 10.1% for PTC = 90% and T2 = 5 T1.
 
 The spurious-trip rate's rare-event form (`N λS` for 1ooN, `2 λS² MTTR`
 for 2oo2, `6 λS² MTTR` for 2oo3, plus `βS λS` where two failures are
@@ -333,7 +357,26 @@ result.nominal          # -> 1.1227e-03
 result.interval(0.9)    # -> (3.300e-04, 3.019e-03)
 ```
 
-The betas are taken as given.
+A vote's common-cause fractions are drawn too, under the tuple of the
+vote's channels (`levers()` lists the votes): `{("a", "b", "c"):
+{"beta": stats.beta(2, 18)}}`. A beta drawn takes the channels beneath
+it alike, so their rates are drawn as one population or not at all.
+
+## Levers
+
+`levers()` lists what a what-if can move, each a `Lever` with its value
+and range: each channel's rates, repairs and proof test (keyed by the
+channel, or by the tuple of channels sharing a cause, which move
+together), a model's parameters in place of a rate, and each vote's
+betas (keyed by the tuple of its channels). `with_levers` builds the
+function with them moved; a proof test interval takes the full test with
+it, every so many tests as before.
+
+```python
+tests = (("a", "b", "c"), "proof_test_interval")
+sooner = function.with_levers({tests: 4380.0})   # tested every six months
+sooner.pfd_avg()   # -> 5.0242e-04, from 1.1227e-03
+```
 
 ## Saving
 

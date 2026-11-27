@@ -355,6 +355,7 @@ def dangerous_chain(
     beta=0.0,
     beta_detected=0.0,
     works=None,
+    acts=None,
 ):
     """The function's PFDavg and PFH (all of it, and the part an
     undetected failure completes) from the chain of its channels, written
@@ -364,7 +365,8 @@ def dangerous_chain(
     mttr; a shared cause fails every channel that is up in its kind. The
     chain runs from test to test, its states mapped at each. ``works``
     says from which channels are up whether the function acts (by
-    default, ``k`` of them)."""
+    default, ``k`` of them), and ``acts`` from a channel's ``(undetected,
+    detected)`` states whether it is up (by default, neither failed)."""
     kinds = [(u, d) for u in range(3 if mrt > 0 else 2) for d in range(2)]
     states = list(itertools.product(kinds, repeat=n))
     index = {state: i for i, state in enumerate(states)}
@@ -410,11 +412,13 @@ def dangerous_chain(
         def works(up):
             return sum(up) >= k
 
+    if acts is None:
+
+        def acts(pair):
+            return pair == (0, 0)
+
     down = np.array(
-        [
-            not works(tuple(pair == (0, 0) for pair in state))
-            for state in states
-        ]
+        [not works(tuple(acts(pair) for pair in state)) for state in states]
     )
     period = expm(generator * interval) @ tested
     # The distribution just after a test, in the long run.
@@ -1110,6 +1114,8 @@ def test_uncertainty_refuses_what_it_cannot_draw():
     with pytest.raises(ValueError, match="not a channel"):
         function.measure_uncertainty("pfd_avg", {"x": {"safe": rate}})
     with pytest.raises(ValueError, match="not a rate"):
+        function.measure_uncertainty("pfd_avg", {"c0": {"lambda": rate}})
+    with pytest.raises(ValueError, match="not the channels of a vote"):
         function.measure_uncertainty("pfd_avg", {"c0": {"beta": rate}})
     with pytest.raises(ValueError, match="draw their rates together"):
         function.measure_uncertainty(
@@ -1131,6 +1137,298 @@ def test_uncertainty_refuses_what_it_cannot_draw():
         differ.measure_uncertainty(
             "pfd_avg", {"a": {"safe": rate}}, mc_samples=10
         )
+
+
+def test_uncertain_betas_are_each_vote_s_own():
+    # A vote's beta drawn through its distribution's quantile function at
+    # the seeded generator's uniforms, the function rebuilt with each.
+    fraction = stats.beta(2, 18)
+    function = vote(1, 2, beta=0.1)
+    result = function.measure_uncertainty(
+        "pfd_avg", {("c1", "c0"): {"beta": fraction}}, n_draws=3, seed=5
+    )
+    drawn = fraction.ppf(np.random.default_rng(5).random(3))
+    for value, beta in zip(result.samples, drawn):
+        assert value == vote(1, 2, beta=beta).pfd_avg()
+    assert result.nominal == function.pfd_avg()
+    assert result.band == "given"
+
+
+def test_a_vote_of_votes_draws_each_vote_s_betas():
+    # The pairs' detected betas and the outer vote's beta, one source
+    # each, in the order given, with the pairs' rates as one population.
+    def pair(a, b, beta_detected=0.05):
+        unit = channel()
+        return SafetyFunction(
+            {a: unit, b: unit}, 2, beta_detected=beta_detected
+        )
+
+    def whole(outer=0.1, inner_a=0.05, inner_b=0.05, du=2e-6):
+        unit = channel(du=du)
+        return SafetyFunction.vote(
+            1,
+            SafetyFunction({"a1": unit, "a2": unit}, 2, beta_detected=inner_a),
+            SafetyFunction({"b1": unit, "b2": unit}, 2, beta_detected=inner_b),
+            beta=outer,
+        )
+
+    function = whole()
+    names = ("a1", "a2", "b1", "b2")
+    keys = [lever.key for lever in function.levers()]
+    assert keys[0] == names and ("a1", "a2") in keys and ("b1", "b2") in keys
+    fraction, rate = stats.uniform(0.0, 0.2), stats.gamma(3, scale=1e-6)
+    result = function.measure_uncertainty(
+        "pfh",
+        {
+            ("a1", "a2"): {"beta_detected": fraction},
+            names: {"dangerous_undetected": rate, "beta": fraction},
+        },
+        n_draws=2,
+        seed=11,
+    )
+    rng = np.random.default_rng(11)
+    inner = fraction.ppf(rng.random(2))
+    du = rate.ppf(rng.random(2))
+    outer = fraction.ppf(rng.random(2))
+    for i, value in enumerate(result.samples):
+        assert value == whole(outer[i], inner[i], du=du[i]).pfh()
+
+
+def test_uncertain_betas_refuse_what_they_cannot_draw():
+    fraction = stats.beta(2, 18)
+    function = vote(2, 3, beta=0.1)
+    with pytest.raises(ValueError, match="not the channels of a vote"):
+        function.measure_uncertainty(
+            "pfd_avg", {("c0", "c1"): {"beta": fraction}}
+        )
+    with pytest.raises(ValueError, match=r"outside \[0, 1\]"):
+        function.measure_uncertainty(
+            "pfd_avg",
+            {("c0", "c1", "c2"): {"beta": stats.norm(0.1, 1.0)}},
+            n_draws=20,
+            seed=0,
+        )
+    with pytest.raises(ValueError, match="drawn twice"):
+        function.measure_uncertainty(
+            "pfd_avg",
+            {
+                ("c0", "c1", "c2"): {"beta": fraction},
+                ("c2", "c1", "c0"): {"beta": fraction},
+            },
+        )
+    differ = SafetyFunction({"a": channel(), "b": channel(du=3e-6)}, 1)
+    with pytest.raises(ValueError, match="cannot be drawn.*alike"):
+        differ.measure_uncertainty("pfd_avg", {("a", "b"): {"beta": fraction}})
+    # A beta drawn takes the channels beneath it alike, as one population.
+    with pytest.raises(ValueError, match="draw their rates together"):
+        vote(1, 2).measure_uncertainty(
+            "pfd_avg",
+            {
+                ("c0", "c1"): {"beta": fraction},
+                "c0": {"safe": stats.gamma(3, scale=1e-6)},
+            },
+        )
+
+
+# -- levers -----------------------------------------------------------------
+
+
+def test_a_function_s_levers():
+    unit = channel(proof_test_coverage=0.9, full_test=5 * T1)
+    alone = channel(du=surv.Weibull.from_params([4e5, 1.5]), repair="instant")
+    function = SafetyFunction.series(
+        vote(2, 3, unit, beta=0.1, beta_safe=0.05),
+        SafetyFunction({"valve": alone}, 1),
+    )
+    found = {(lever.key, lever.name): lever for lever in function.levers()}
+    group = ("c0", "c1", "c2")
+    assert [name for key, name in found if key == group] == [
+        "dangerous_undetected",
+        "dangerous_detected",
+        "safe",
+        "repair",
+        "proof_test_interval",
+        "proof_test_coverage",
+        "proof_test_offset",
+        "beta",
+        "beta_detected",
+        "beta_safe",
+    ]
+    assert [name for key, name in found if key == "valve"] == [
+        "dangerous_undetected.alpha",
+        "dangerous_undetected.beta",
+        "dangerous_detected",
+        "safe",
+        "repair",
+        "proof_test_interval",
+        "proof_test_offset",
+    ]
+    assert found[group, "beta_safe"].value == 0.05
+    assert found["valve", "repair"].value == 0.0
+    assert found["valve", "dangerous_undetected.alpha"].value == 4e5
+    assert found[group, "proof_test_offset"].bounds == (0.0, T1)
+    for lever in found.values():
+        low, high = lever.bounds
+        assert low <= lever.value <= high and not lever.discrete
+    assert json.loads(json.dumps(function.levers()[0].to_dict()))["name"] == (
+        "dangerous_undetected"
+    )
+
+
+@pytest.mark.parametrize("name", sorted(safety_function_kinds()))
+def test_each_lever_moves_as_its_function_is_built(name):
+    function = safety_function_kinds()[name]
+    for lever in function.levers():
+        low, high = lever.bounds
+        value = (
+            lever.value * 0.9
+            if lever.value > 0.0
+            else (low + min(high, 1.0)) / 2
+        )
+        moved = function.with_levers({lever: value})
+        again = {(m.key, m.name): m.value for m in moved.levers()}
+        assert again[lever.key, lever.name] == pytest.approx(value, rel=1e-15)
+        if math.isfinite(high):
+            with pytest.raises(ValueError, match="cannot be"):
+                function.with_levers({lever: high + 1.0})
+        with pytest.raises(ValueError, match="cannot be"):
+            function.with_levers({lever: low - 1.0})
+
+
+def test_with_levers_is_the_function_built_by_hand():
+    unit = channel(proof_test_coverage=0.9, full_test=5 * T1)
+    function = vote(1, 2, unit, beta=0.1)
+    moved = function.with_levers(
+        {
+            (("c0", "c1"), "proof_test_interval"): T1 / 2,
+            (("c0", "c1"), "beta"): 0.2,
+            (("c0", "c1"), "repair"): 24.0,
+        }
+    )
+    by_hand = vote(
+        1,
+        2,
+        channel(
+            repair=24.0,
+            proof_test_interval=T1 / 2,
+            proof_test_coverage=0.9,
+            full_test=5 * T1 / 2,
+        ),
+        beta=0.2,
+    )
+    assert moved.pfd_avg() == by_hand.pfd_avg()
+    assert moved.channels == by_hand.channels
+    assert function.pfd_avg() == vote(1, 2, unit, beta=0.1).pfd_avg()
+    # Channels that share no cause each have their own.
+    staggered = SafetyFunction(
+        {"a": channel(), "b": channel(proof_test_offset=T1 / 2)}, 1
+    )
+    moved = staggered.with_levers({("a", "safe"): 1e-6})
+    assert moved.channels["a"].safe == 1e-6
+    assert moved.channels["b"] == staggered.channels["b"]
+
+
+def test_with_levers_refuses_what_is_no_lever_or_value():
+    function = vote(1, 2, beta=0.1)
+    with pytest.raises(ValueError, match="Did you mean 'beta'"):
+        function.with_levers({(("c0", "c1"), "betta"): 0.2})
+    with pytest.raises(ValueError, match="no levers"):
+        function.with_levers({("c0", "safe"): 1e-6})
+    with pytest.raises(TypeError, match="a dict"):
+        function.with_levers([((("c0", "c1"), "beta"), 0.2)])
+    with pytest.raises(TypeError, match="a number"):
+        function.with_levers({(("c0", "c1"), "beta"): "high"})
+    differ = SafetyFunction({"a": channel(), "b": channel(du=3e-6)}, 1)
+    with pytest.raises(ValueError, match="cannot be 0.1.*alike"):
+        differ.with_levers({(("a", "b"), "beta"): 0.1})
+
+
+# -- a proof test that can miss, in the PFH ---------------------------------
+
+
+def missing(lam, k, n, coverage=0.9, every=5):
+    unit = channel(
+        du=lam,
+        dd=0.0,
+        safe=0.0,
+        repair="instant",
+        proof_test_coverage=coverage,
+        full_test=every * T1,
+    )
+    return vote(k, n, unit)
+
+
+@pytest.mark.parametrize("k, n", [(1, 2), (2, 3)])
+def test_the_pfh_with_a_test_that_misses_holds_to_first_order(k, n):
+    # One failure from the function's: the PFH is N!/(M-1)! lambda times
+    # the average chance that another channel is down, lambda times its
+    # average wait, c T1 / 2 + (1 - c) T2 / 2, which is what the formula's
+    # PTC T1 + (1 - PTC) T2 in place of T1 gives. So its gap to the exact
+    # count of failures an undetected one completes falls tenfold with the
+    # rate, and is under 5 lambda T2.
+    gaps = []
+    for lam in (2e-7, 2e-8):
+        function = missing(lam, k, n)
+        exact = function.pfh(undetected_only=True)
+        gaps.append(function.simplified_formulas().pfh / exact - 1.0)
+    coarse, fine = gaps
+    assert 0.0 < fine < coarse < 5 * 2e-7 * 5 * T1
+    assert coarse / fine == pytest.approx(10.0, rel=0.02)
+
+
+def test_a_test_that_misses_is_high_where_two_channels_wait():
+    # With two other channels down at once (the PFDavg of 1oo2, the PFH
+    # of 1oo3) the formulas take the square of the average wait, w, where
+    # the exact value averages w squared: w = c x1 + (1 - c) x2, x1 and x2
+    # the times since the last proof test and full test, so the formulas
+    # are high by T_eff^2 / (3 E[w^2]) at the leading order, 10.1% for c =
+    # 0.9, T2 = 5 T1, and within 5 lambda T2 of it at lambda = 2e-8.
+    c, m = 0.9, 5
+    effective = c + (1 - c) * m
+    squared = (
+        c**2 / 3
+        + (1 - c) ** 2 * m**2 / 3
+        + 2 * c * (1 - c) * (1 / 3 + (m - 1) / 4)
+    )
+    leading = effective**2 / (3 * squared)
+    assert leading == pytest.approx(1.1011, abs=1e-4)
+    lam = 2e-8
+    pair, three = missing(lam, 1, 2), missing(lam, 1, 3)
+    within = 5 * lam * m * T1
+    assert pair.simplified_formulas().pfd_avg / pair.pfd_avg() == (
+        pytest.approx(leading, rel=within)
+    )
+    assert three.simplified_formulas().pfh / three.pfh(
+        undetected_only=True
+    ) == pytest.approx(leading, rel=within)
+
+
+# -- a detected failure that trips, with an undetected one ------------------
+
+
+@pytest.mark.parametrize("k, n", [(1, 1), (1, 2)])
+def test_a_tripped_channel_with_an_undetected_failure(k, n):
+    # With detected_trips=True a channel holding an undetected failure is
+    # counted dangerous even while a detected failure has it voting to
+    # trip. The chain in which such a channel acts says by how much that
+    # is conservative: each channel is dangerous with the undetected
+    # failure and the detected one under repair independently, so for one
+    # failure (1oo1) or two (1oo2) from the function's the PFDavg is high
+    # by exactly (1 + lambda_DD MTTR)^(n - k + 1).
+    unit = channel(**RATES, undetected_repair="instant")
+    function = vote(k, n, unit, detected_trips=True)
+    exact, _, _ = dangerous_chain(
+        n,
+        k,
+        RATES["du"],
+        RATES["dd"],
+        MTTR,
+        0.0,
+        T1,
+        acts=lambda pair: pair[0] == 0 or pair[1] == 1,
+    )
+    high = (1 + RATES["dd"] * MTTR) ** (n - k + 1)
+    assert function.pfd_avg() / exact == pytest.approx(high, rel=1e-8)
 
 
 # -- the results in one call ------------------------------------------------
@@ -1264,6 +1562,8 @@ def test_the_report_covers_every_public_analysis():
     }
     assert set(SAFETY_CALLS) == public - {
         "analysis_routes",
+        "levers",
+        "with_levers",
         "series",
         "vote",
         "to_dict",
