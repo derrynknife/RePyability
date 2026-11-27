@@ -1303,6 +1303,15 @@ def _standby_cycle_blocker(
             "both units can be repaired at once (one repair at a time, "
             "repair_crews=1, is followed over time)"
         )
+    if (
+        reason is None
+        and over_time
+        and rbd._standby[node].switching_probability != 1.0
+    ):
+        reason = (
+            "switching onto its spare may fail (a sure switch is "
+            "followed over time)"
+        )
     if reason is None:
         return None
     if over_time:
@@ -1318,7 +1327,7 @@ def _standby_cycle_blocker(
         f"Component {node!r} is {rbd._standby[node].what}, whose exact "
         "long-run values come from a Markov chain of its units, which "
         "needs their lives and repair times exponential, or (a cold "
-        "standby pair, one needed, a sure switch) from its cycle; "
+        "standby pair, one needed) from its cycle; "
         f"{reason}: simulate it with availability() or cost()."
     )
 
@@ -1372,7 +1381,11 @@ def _standby_long_run(rbd, node) -> "_standby_chain.StandbyLongRun":
         _require_standby_long_run(rbd, node)
         component = rbd.components[node]
         pair = _standby_cycle if _standby_crews(rbd) == 1 else _standby_both
-        return pair.long_run(component.reliability, component.time_to_replace)
+        return pair.long_run(
+            component.reliability,
+            component.time_to_replace,
+            rbd._standby[node].switching_probability,
+        )
     arrangement = rbd._standby[node]
     if arrangement.key == "markov":
         # Its own chain's: the unavailability summed over its failed

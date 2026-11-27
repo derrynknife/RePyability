@@ -37,6 +37,13 @@ long-run values are the ratios of the ``W(0)``. With exponential lives
 and repairs this is the group's Markov chain with a crew each
 (``_standby_chain``), which checks it.
 
+**A switch that can fail** (``switching_probability`` below 1): where a
+step ends with the other unit ready (``V < X``, probability ``1 - G(a) -
+P(R > a + X)`` of ``1 - G(a)``) and the switch fails, the pair is down
+for a repair and then one unit with a waiting spare until a switch works
+(``_standby_cycle.switched``), which ``b`` gains; the lives in it add to
+the units' failures, and so to the time.
+
 **On a grid.** The equation is solved on a uniform grid of ``a``, out to
 where a repair is all but surely over (``TAIL``), with ``X`` and ``R``
 each rounded to the grid's nearest point (its probability from the
@@ -92,10 +99,15 @@ def _rounded(model, steps: int, h: float) -> np.ndarray:
     return np.where(below[1:] < 0.5, np.diff(below), -np.diff(above))
 
 
-def _solution(life, repair, end: float, steps: int) -> Optional[np.ndarray]:
+def _solution(
+    life, repair, end: float, steps: int, unswitched: np.ndarray
+) -> Optional[np.ndarray]:
     """``W(0)`` for the units' failures, the down time and the system's
     failures (see the module's notes), on a grid of ``steps`` steps to
-    ``end``; None where the sum does not settle on it."""
+    ``end``; None where the sum does not settle on it. ``unswitched`` is
+    what each gains, on average, where a step ends with the other unit
+    ready (a switch that fails, and what follows: none for a sure
+    switch)."""
     from scipy import fft
 
     h = end / steps
@@ -123,13 +135,9 @@ def _solution(life, repair, end: float, steps: int) -> Optional[np.ndarray]:
     weighted = survival * h
     weighted[0] *= 0.5
     shorter = correlated(transform(weighted), transform(survival))
-    term = np.stack(
-        [
-            survival,
-            correlated(f_hat, transform(shorter)),
-            correlated(f_hat, transform(survival)),
-        ]
-    )
+    still = correlated(f_hat, transform(survival))  # P(R > a + X)
+    term = np.stack([survival, correlated(f_hat, transform(shorter)), still])
+    term += unswitched[:, None] * np.maximum(survival - still, 0.0)
     np.maximum(term, 0.0, out=term)
     solution = term.copy()
     for _ in range(MAX_SUM):
@@ -165,17 +173,18 @@ def _extrapolated(last: List[np.ndarray]) -> np.ndarray:
     return np.where(np.isfinite(limit) & (ratio > 1.0), limit, c)
 
 
-def _settled(life, repair) -> Tuple[np.ndarray, float]:
+def _settled(life, repair, unswitched: np.ndarray) -> Tuple[np.ndarray, float]:
     """``W(0)`` for the units' failures, the down time and the system's
     failures, the grid halved until two extrapolated solutions agree, and
-    how far apart (relatively) the last two were."""
+    how far apart (relatively) the last two were (``unswitched``: see
+    ``_solution``)."""
     end = float(np.ravel(repair.qf(1.0 - TAIL))[0])
     steps = FIRST_STEPS
     solutions: List[np.ndarray] = []
     limit: Optional[np.ndarray] = None
     apart = np.inf
     while steps <= MAX_STEPS:
-        solution = _solution(life, repair, end, steps)
+        solution = _solution(life, repair, end, steps, unswitched)
         steps *= 2
         if solution is None:
             solutions.clear()
@@ -200,30 +209,35 @@ def _settled(life, repair) -> Tuple[np.ndarray, float]:
     return limit, apart
 
 
-def long_run(life, repair) -> StandbyLongRun:
+def long_run(life, repair, switching: float = 1.0) -> StandbyLongRun:
     """The long-run values of a cold standby pair whose units are both
     repaired at once, lives ``life`` and repairs ``repair`` (any models
-    with ``ff``, ``sf`` and ``qf``)."""
+    with ``ff``, ``sf`` and ``qf``), whose switch works with probability
+    ``switching``."""
     try:
-        return _KEPT[life][repair]
+        return _KEPT[life][repair][switching]
     except (KeyError, TypeError):  # not kept yet, or not kept at all
         pass
-    values = _worked_out(life, repair)
+    values = _worked_out(life, repair, switching)
     try:
-        _KEPT.setdefault(life, weakref.WeakKeyDictionary())[repair] = values
+        kept = _KEPT.setdefault(life, weakref.WeakKeyDictionary())
+        kept.setdefault(repair, {})[switching] = values
     except TypeError:  # a model that is not weakly referenced
         pass
     return values
 
 
-def _worked_out(life, repair) -> StandbyLongRun:
+def _worked_out(life, repair, switching: float) -> StandbyLongRun:
     """See ``long_run``."""
-
-    def S(t: float) -> float:
-        return float(np.ravel(life.sf(np.array([t])))[0])
-
-    mean_life = _standby_cycle._integral(S, _standby_cycle._cuts(life))
-    (units, down, fails), apart = _settled(life, repair)
+    if switching <= 0.0:
+        return _standby_cycle.unswitched(life, repair)
+    mean_life = _standby_cycle.mean_time(life)
+    unswitched = np.zeros(3)
+    if switching < 1.0:
+        unswitched = (1.0 - switching) * _standby_cycle.switched(
+            repair, switching
+        )
+    (units, down, fails), apart = _settled(life, repair, unswitched)
     if apart > RTOL:
         warnings.warn(
             "The long-run values of a cold standby pair with both units "
