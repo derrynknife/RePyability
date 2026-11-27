@@ -15,16 +15,32 @@ VOTE gates included), so that the diagram's values over time
 (no crews or common-cause groups couple them), so the system's failure
 frequency at a time is ``sum_i I_B^i(t) w_i(t)``, ``w_i`` the event's
 failure intensity (``failing_at``).
+
+A tree may mix them with events that are not repaired (#831): a fixed
+probability ``q`` (down with it at every time, never failing over time:
+``w = 0``), which the diagram adds to the structure's inputs wherever it
+is evaluated (``_node_pairs``), so that every value over time and in the
+long run takes it; and a life that is not repaired, down from its failure
+on (``q(t) = F(t)``, ``w(t)`` its density), which follows a curve of its
+own (``LifeCurve``) beside the components' and has no long run. With
+common-cause groups over its repaired events (the diagram's own
+``ccf_groups``), the diagram's values are its groups' chains' (see
+``_ccf_groups``), conditioned on module by module over the structure.
 """
 
-from typing import Any, Dict, Hashable, Mapping, Tuple
+from typing import Any, Dict, Hashable, Mapping, Optional, Tuple
 
 import numpy as np
 
 from repyability.rbd import _curves, _rates, _windows
 from repyability.rbd._common import _constant_rate
 from repyability.rbd._model_utils import failure_time_scale
-from repyability.rbd._point_availability import curve_breaks, curve_grids
+from repyability.rbd._point_availability import (
+    Atoms,
+    curve_breaks,
+    curve_grids,
+    knots,
+)
 from repyability.rbd.repairable_rbd import RepairableRBD
 
 #: The keys an event's spec may have: its life, its repair, and its tests.
@@ -47,12 +63,88 @@ def checked_spec(name: Hashable, spec: Mapping, convert: str) -> dict:
     return dict(spec)
 
 
+class LifeCurve:
+    """An event that is not repaired, as a curve (see
+    ``_point_availability``): up until its life ends and down from then
+    on, ``sf(t)``, its failures by ``t`` ``F(t)`` and its failure
+    intensity its density. It bends between its life's quantiles
+    (``knots``), which are its breaks, and is never constant (it has no
+    long run)."""
+
+    period = None
+    settle = np.inf
+    #: Its probability of being down is its own (``down_at``), so a small
+    #: one keeps its digits (see ``_curves._nodes_down_at``).
+    has_down = True
+
+    def __init__(self, model):
+        self.model = model
+        self._knots = knots(model)
+
+    def _values(self, f, x: np.ndarray) -> np.ndarray:
+        x = np.asarray(x, dtype=float)
+        with np.errstate(all="ignore"):
+            values = np.asarray(f(x), dtype=float)
+        return np.broadcast_to(values, x.shape).copy()
+
+    def at(self, x: np.ndarray) -> np.ndarray:
+        return self._values(self.model.sf, x)
+
+    def down_at(self, x: np.ndarray) -> np.ndarray:
+        return self._values(self.model.ff, x)
+
+    failed_at = down_at
+
+    def intensity(self, x: np.ndarray) -> np.ndarray:
+        """Its failures per unit time at ``x``: its density."""
+        return self._values(self.model.df, x)
+
+    def events(self, x: np.ndarray) -> Dict[str, np.ndarray]:
+        """Its expected events before each time ``x``: one failure, by
+        ``F(x)``, and nothing else (it is not repaired)."""
+        zero = np.zeros(np.shape(x))
+        return {
+            "failures": self.down_at(x),
+            "planned": zero,
+            "corrective": zero,
+            "preventive": zero,
+            "inspections": zero,
+        }
+
+    def atoms(self, stop: float) -> Atoms:
+        return Atoms.none()
+
+    def breaks(self, start: float, stop: float) -> np.ndarray:
+        """Its life's quantiles in ``[start, stop]``, between which it is
+        smooth (see ``curve_breaks``)."""
+        k = self._knots
+        return k[(k >= start) & (k <= stop)]
+
+    knots = breaks
+
+    def grids(self) -> list:
+        return []
+
+
 class Structured(RepairableRBD):
     """A ``RepairableRBD`` of the events (in series, as drawn), evaluated
     over ``structure``: a decomposition over the events working, which
-    stands for the diagram's own (see ``RBD._decomposition``)."""
+    stands for the diagram's own (see ``RBD._decomposition``). The
+    structure's other inputs are the events that are not repaired:
+    ``fixed``, each a probability of being down at every time, and
+    ``lives``, each a life that is not repaired (a ``LifeCurve``). With
+    ``ccf_groups``, over the repaired events, as a diagram takes them."""
 
-    def __init__(self, specs: Mapping[Hashable, dict], structure: Any):
+    def __init__(
+        self,
+        specs: Mapping[Hashable, dict],
+        structure: Any,
+        fixed: Optional[Mapping[Hashable, float]] = None,
+        lives: Optional[Mapping[Hashable, Any]] = None,
+        ccf_groups: Optional[list] = None,
+    ):
+        self._fixed = dict(fixed or {})
+        self._lives = {name: LifeCurve(m) for name, m in (lives or {}).items()}
         names = list(specs)
         taken = set(names)
         ends = []
@@ -68,6 +160,7 @@ class Structured(RepairableRBD):
             dict(specs),
             input_node=ends[0],
             output_node=ends[1],
+            ccf_groups=ccf_groups,
         )
         # Built as a series diagram (every event relevant, each checked
         # as a component), and evaluated over the structure from now on.
@@ -76,6 +169,34 @@ class Structured(RepairableRBD):
     def _decomposition(self):
         structure = self.__dict__.get("_structure")
         return super()._decomposition() if structure is None else structure
+
+    def _evaluated_nodes(self) -> list:
+        """The components, and the lives that are not repaired, whose
+        probabilities come with the components' (from their curves)."""
+        return [*self.nodes, *self.__dict__.get("_lives", ())]
+
+    def _unrepaired_curves(self) -> dict:
+        """The curves of the lives that are not repaired (see
+        ``_curves._availability_curves``)."""
+        return dict(self._lives)
+
+    def _node_arrays(self, node_probabilities: Dict) -> tuple:
+        """``RBD._node_arrays``, with the fixed events' probabilities of
+        not being down."""
+        arrays, size = super()._node_arrays(node_probabilities)
+        for event, q in self.__dict__.get("_fixed", {}).items():
+            arrays[event] = np.full(size, 1.0 - q)
+        return arrays, size
+
+    def _node_pairs(
+        self, node_probabilities: Dict, node_failures: Optional[Dict] = None
+    ) -> tuple:
+        """``RBD._node_pairs``, with each fixed event down with its
+        probability exactly."""
+        p, q, size = super()._node_pairs(node_probabilities, node_failures)
+        for event, value in self.__dict__.get("_fixed", {}).items():
+            q[event] = np.full(size, value)
+        return p, q, size
 
 
 def _curves_to(
@@ -121,7 +242,7 @@ def _typical_life(rbd: Structured) -> float:
     scales = [
         failure_time_scale(component.reliability)
         for component in rbd.components.values()
-    ]
+    ] + [failure_time_scale(curve.model) for curve in rbd._lives.values()]
     scales = [x for x in scales if np.isfinite(x) and x > 0.0]
     return min(scales) if scales else 1.0
 
@@ -140,6 +261,10 @@ def failing_at(rbd: Structured, times: np.ndarray):
     down = _curves._nodes_down_at(rbd, curves, times, states)
     intensity = {}
     for node, curve in curves.items():
+        if isinstance(curve, LifeCurve):
+            # Not repaired: its density, exactly.
+            intensity[node] = curve.intensity(times)
+            continue
         rate = _constant_rate(rbd.components[node].reliability)
         if rate is not None:
             intensity[node] = rate * (1.0 - down[node])
@@ -178,7 +303,7 @@ def down_routes(rbd: Structured) -> Dict[Hashable, Tuple[str, str]]:
     from repyability.rbd import routes as r
 
     closed = _curves._closed_form_rates(rbd, None)
-    return {
+    out = {
         node: (
             (r.EXACT, "an exponential life and repair, in closed form")
             if node in closed
@@ -189,6 +314,11 @@ def down_routes(rbd: Structured) -> Dict[Hashable, Tuple[str, str]]:
         )
         for node in rbd.components
     }
+    for node in rbd._fixed:
+        out[node] = (r.EXACT, "a fixed probability")
+    for node in rbd._lives:
+        out[node] = (r.EXACT, "not repaired: its life's F(t)")
+    return out
 
 
 def intensity_routes(
@@ -200,6 +330,16 @@ def intensity_routes(
     differences; in the long run, exactly; over a window, numerically."""
     from repyability.rbd import routes as r
 
+    # A fixed probability never fails over time; a life that is not
+    # repaired fails once, by F(t), at its density.
+    lives = {
+        node: (
+            (r.EXACT, "not repaired: its life's F(t)")
+            if name == "expected_failures"
+            else (r.EXACT, "not repaired: its life's density")
+        )
+        for node in rbd._lives
+    }
     if name == "system_failure_frequency":
         return {
             node: (r.EXACT, "its long-run failure frequency")
@@ -207,18 +347,25 @@ def intensity_routes(
         }
     if name == "expected_failures":
         return {
-            node: (r.NUMERICAL, "its renewal equation, on a grid")
-            for node in rbd.components
+            **{
+                node: (r.NUMERICAL, "its renewal equation, on a grid")
+                for node in rbd.components
+            },
+            **lives,
         }
     closed = _curves._closed_form_rates(rbd, None)
     return {
-        node: (
-            (r.EXACT, "its constant rate while it works")
-            if node in closed
-            else (
-                r.NUMERICAL,
-                "differences of its expected failures on its curve's grid",
+        **{
+            node: (
+                (r.EXACT, "its constant rate while it works")
+                if node in closed
+                else (
+                    r.NUMERICAL,
+                    "differences of its expected failures on its curve's "
+                    "grid",
+                )
             )
-        )
-        for node in rbd.components
+            for node in rbd.components
+        },
+        **lives,
     }

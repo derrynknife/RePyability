@@ -93,6 +93,7 @@ Not yet single:
 | UC-68 | "95% sure": the least spend that keeps a bad year's downtime (hours or cost) under a limit, with the frontier and both planned and unplanned downtime | **Built** (simulated): `RepairableRBD.least_spend_for_downtime` and `UnitPlan.least_spend_for_downtime`, with redundancy, interval, test-interval, upgrade, crew and call-out levers, and parameter uncertainty (`uncertainty=`); risk measures in `repyability.value._risk` |
 | UC-27 | A fleet whose units differ (lemons fail more and are written off sooner): the cheapest rule for a new unit (keep repairing, replace at an age, replace at a count of failures), and for one unit that has just failed, repair it again or replace it | **Built**: `RepairOrReplace` (`fleet_policy`, `unit_decision`, `break_even_frailty`), from a surpyval joint frailty model; numerical, bands from parameter draws |
 | UC-73 | A unit that fails on demand, called on at set times (planned starts, a recurrence rule) or at a rate that changes over the year: its availability, failures and cost over a window | **Built**: a spec's (and a `UnitPlan`'s) `"demand_times"`, exact over a window and simulated; `"demand_plan"`, exact over a window where repairs take no time and simulated otherwise; `"demand_basis"` for demands counted in operating time |
+| UC-74 | Repairable spares for a fleet at several bases with a depot behind them: each site's stock of each part for a fleet availability target at the least spend, and the whole front of spend against availability | **Built**: `RepairableRBD.spares_front` and `spares_allocation` (a series diagram; METRIC and VARI-METRIC) |
 
 ## How a use case is added
 
@@ -3850,6 +3851,55 @@ saving, units and refusals. Left: a unit that wears out and may also
 fail on a demand (two components in series for now), and demands at
 fixed times.
 
+**A unit that wears out and fails on demand, in one component (added
+after).** "Our pump wears (a Weibull life), and it also fails to start on
+2% of its demands, about one every two days: how available is it?" Who
+asks: the same engineer, with a fitted life and OREDA's fail-to-start
+probability. Before, a demand rate on a life was refused, and the two
+modes had to be drawn as two components in series, which renews each on
+its own at a repair. Solved as a spec key (and a `UnitPlan`'s `demand`):
+`"demand": {"probability": p, "rate": d}` beside the life, the two
+competing and renewed together, so the unit's hazard is the life's plus
+`d p` (`_demands.LifeWithDemands`: its `Hf` the sum, its quantile the
+inverse of `Hf` by Newton's steps kept in a bracket), a life every route
+takes by its functions. Hand-worked: with an exponential life of rate
+0.004 and `d p = 0.005`, it is the exponential of rate 0.009; from new,
+it is the life and an exponential of rate `d p` in series. Checks
+(`test_life_with_demands.py`): the functions against `R(t) exp(-d p t)`,
+the quantile and the draws, a draw at a virtual age, the mean against
+quadrature; every method against the summed exponential, to the bit;
+the series diagram from new; the seeded simulation against the exact
+values; the levers, saving, `UnitPlan`, units, duty and refusals. Left:
+demands at set times or on a plan beside a life (two components in
+series for now).
+
+**Demands at set times or on a plan beside a wearing life (added
+after).** "The fire pump wears (a Weibull life), and it is started at the
+weekly tests, or more often in summer: how available is it?" Who asks:
+the same engineer, with the test dates as model times (a rule's
+`rule_times`) or the expected starts by season. Before, the two modes
+were drawn as two components in series, renewed apart. Solved as the
+same spec key with `"times"` or `"plan"` in place of `"rate"`
+(`_demands.LifeWithPlannedDemands`, a life on the diagram's clock): the
+modes compete and are renewed together, but the demands stay on the
+calendar, so a unit put in at `t0` at age `a` fails when the life's
+`H(a + s) - H(a)`, plus `-log(1 - p)` a demand met (or `p` times the
+plan's expected demands), reaches its draw `-log u`; each piece between
+demands (or plan times) is the life's draw at that piece's constant
+demand rate. It is no renewal process, so it is simulated (Python
+engine) and the exact methods refuse it. Hand-worked: Weibull(40, 1.5),
+one demand at 50 failing it with 0.3, repairs of exactly 35, over 68: at
+most two failures, the second only after a life failure before 33, by a
+new unit meeting the demand if back before 50; its expected downtime is
+two nested integrals. Checks (`test_life_with_planned_demands.py`): from
+new against the life and the set-times component in series (1e-12) and
+the plan's; the life left by hand after a repair and at an age; each
+draw inverting the summed hazard, and the draws' survival from several
+start times; the hand-worked case against 4000 seeded simulations; set
+times converging to the constant rate; a plan of one rate as the rate;
+routes, saving, `UnitPlan`, the lever, units and refusals. Left: its
+values over a window exactly (a renewal equation on the clock).
+
 ### UC-73: "The standby generator is started at three planned outages next year, and it fails to start on 10% of starts. How available is it, how many failed starts do we expect, and what do the repairs cost? And the fire pump, called on more in summer than in winter?"
 
 - **Status:** built: a component spec's `"demand_times"` (a list of
@@ -4187,3 +4237,129 @@ fixed times.
   - surpyval's joint frailty model is experimental (its design decisions
     are proposed), with Weibull baselines and no bootstrap: the bands are
     Wald draws.
+
+### UC-74: "We run 20 systems from two bases, 12 and 8, with a depot behind them. A failed part is swapped from the base's shelf and repaired, at the base if it can be and at the depot if not. How many of each part should each base and the depot hold so that 95% of the fleet is not waiting for a part, at the least spend, and what does each dollar more buy?"
+
+- **Status:** built: `RepairableRBD.spares_front` and
+  `spares_allocation` (`rbd/_echelons.py`), numerical.
+- **Who asks, and why:** the support planner of a fleet, buying its
+  repairable spares. A spare at the depot shortens every base's wait a
+  little, a spare at a base only that base's but by more, and a dear
+  part's spare buys less per dollar than a cheap one's: the stock is
+  chosen for the system, not part by part to a fill rate (Sherbrooke,
+  *Optimal Inventory Modeling of Systems*, 2nd ed., ch. 2 and 3: METRIC
+  and VARI-METRIC).
+- **What they know:** the bases, each with how many systems it runs; the
+  depot. For each part: how often a system needs one (by default the
+  diagram's long-run replacement rate, as `spares_stock` takes it), how
+  many a system has, the chance a failure is repaired at the base, the
+  base's and the depot's repair times, the time to order one from the
+  depot and ship it to a base, and its price. Every part is needed: a
+  system missing one is down. Here, in hours:
+
+  | Part | Per system | Failures per system | Repaired at the base | Base repair | Depot repair | Order and ship | Price |
+  |---|---|---|---|---|---|---|---|
+  | pump | 1 | 1 in 2,000 h | 30% | 48 h | 600 h | 72 h | 12,000 |
+  | valve | 1 | 1 in 5,000 h | 50% | 24 h | 400 h | 72 h | 3,000 |
+  | controller | 2 | 2 in 8,000 h | 10% | 72 h | 900 h | 120 h | 25,000 |
+
+- **What they want back:** the front of spend against fleet
+  availability, each point with every site's stock of every part, the
+  expected backorders (parts a system is waiting for) and each base's
+  availability; and from it, the cheapest stock for a target, or the
+  best within a budget.
+- **How it is solved (exact pipelines, an approximation where the two
+  echelons meet):** stock is replenished one for one. By Palm's theorem
+  the parts in a repair shop are Poisson with mean the demand times the
+  mean repair time, whatever the repair times' distribution.
+  - *The depot.* It takes the failures the bases cannot repair, `m0 =
+    sum of m_j (1 - r_j)`, so its pipeline is Poisson with mean `m0 T0`;
+    with `s0` held its expected backorders are `EBO0 = E[(X - s0)+]` and
+    its variance of backorders `VBO0`, and a base's order waits `EBO0 /
+    m0` for it on average.
+  - *A base.* Its pipeline (in its own repair, or on order from the
+    depot) has mean `m_j [r_j T_j + (1 - r_j)(O_j + EBO0 / m0)]`. METRIC
+    takes it as Poisson. That understates the backorders, since the
+    depot's delays come in runs: VARI-METRIC (the default) gives the
+    pipeline its variance, `m_j [r_j T_j + (1 - r_j) O_j] + f_j (1 -
+    f_j) EBO0 + f_j^2 VBO0` with `f_j` the base's share of the depot's
+    demand, and a negative binomial of that mean and variance. With `s`
+    held the base's expected backorders are `E[(X - s)+]`.
+  - *Availability.* A base's is the product over parts of `(1 - EBO /
+    (N Z))^Z` (`N` systems, `Z` of the part in each: each of its `N Z`
+    places holds a part with that chance), and the fleet's the bases'
+    weighed by their systems.
+  - *The front.* For each part and each count held in all, the best
+    split between the depot and the bases is found (for each depot
+    stock, the bases' spares in the order of the backorders each
+    removes, which is optimal as a base's backorders are convex in its
+    stock; then the least over the depot stocks), and the counts on the
+    lower convex hull of backorders against count are kept. The parts'
+    hull steps are then taken in the order of backorders removed per
+    dollar. Each point has the fewest backorders of any stock at its
+    spend or less.
+- **Today:** `spares_stock` is one site with one fixed lead time: with
+  the depot's turnaround as the lead time it gives the depot's shelf,
+  and with a base's repair time a base that repairs everything itself,
+  but nothing joins the two or weighs one part against another. By hand
+  (a script of sums over `scipy.stats.poisson` and `nbinom`):
+  - *With nothing held:* the pumps' depot pipeline is `20 / 2000 x 0.7
+    x 600 = 4.2`; a base order waits the 600 h; the north base's
+    pipeline is `12 / 2000 x (0.3 x 48 + 0.7 x 672) = 2.9088`, all of it
+    backorders. Over the three parts 10.466 parts are owed, and the
+    availability is 0.5631 at both bases.
+  - *One pump at the depot:* `EBO0 = 3.214996`, `VBO0 = 4.088808`, and
+    an order waits 459.29 h; the north base's pipeline has mean 2.317797
+    and variance 2.632370, and with one pump there its backorders are
+    1.431583 (METRIC: 1.416288).
+  - *The front (VARI-METRIC)* starts with a valve at the depot (spend
+    3,000, availability 0.5794), then pumps at the depot. The cheapest
+    stock on it for 95% costs 246,000:
+
+    | Part | Depot | North | South |
+    |---|---|---|---|
+    | pump | 4 | 2 | 1 |
+    | valve | 2 | 1 | 1 |
+    | controller | 4 | 1 | 1 |
+
+    with 0.85627 backorders and an availability of 0.95778 (north
+    0.95986, south 0.95466). The step before it (221,000, a controller
+    fewer at the depot) gives 0.94155.
+  - *METRIC* would stop at 218,000 (one valve and one controller fewer
+    at the depot), calling it 0.95004; by VARI-METRIC that stock gives
+    0.93958.
+- **Checks:** the hand-worked numbers above; the expected backorders
+  against the Poisson closed form, and the depot's delay against its
+  definition; one base with no depot against `spares_stock`'s spares on
+  order with the demand going on; every point of the front against a
+  search of every stock vector on a small case; the backorders falling
+  and the spend rising along the front; a seeded simulation of the two
+  echelons written in the test from this definition (Poisson demands, a
+  shelf at each site, first come first served at the depot): the depot's
+  backorders and delay, and a base's backorders where its resupply
+  times are independent (everything repaired at the base; nothing held
+  at the depot with a fixed depot repair time), within four standard
+  errors, and elsewhere VARI-METRIC closer to it than METRIC; times and
+  rates scale with the unit.
+  The runs (2,000, fixed before running, each 20,000 h after 6,000 h
+  of warm-up) gave, for the pumps with 3 at the depot and 2 and 1 at the
+  bases: the depot's backorders 1.4931 (standard error 0.0091) against
+  1.5032, an order's wait 212.2 h (1.1) against 214.7, and the bases'
+  backorders 0.2767 (0.0031) and 0.3270 (0.0030) against VARI-METRIC's
+  0.2735 and 0.3248, and METRIC's 0.1959 and 0.2834.
+- **Learned / open questions:** the demand is taken as going on while a
+  system waits, as METRIC takes it, where `spares_stock` slows it (a
+  system waiting for a part makes no demand): close where backorders are
+  few, which is where a target puts the stock. A count of a part off
+  the hull (cheaper than the next point, but with fewer backorders
+  removed per dollar than it) is not on the front, as in the textbook's
+  marginal analysis; one on the hull's line is kept. The split of a
+  part's count is not nested from one point to the next (a valve at the
+  depot at 27,000 is two at the bases at 30,000). The availability's
+  product over parts is exact, given the backorders, for one of each
+  part in a system; with several of a part it takes a system's places
+  as independent. The methods are on the diagram for its demand rates
+  and refuse one that is not a series system. Left for later, each its own use case: parts
+  within parts (MOD-METRIC), a redundant diagram (a missing part that
+  need not ground the system), cannibalisation, lateral supply between
+  bases, and a base with repair times or a ship time of its own.

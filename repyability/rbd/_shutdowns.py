@@ -1258,6 +1258,8 @@ NOT_TAKEN = (
     "mean_time_to_first_failure",
     "spares_demand",
     "spares_stock",
+    "spares_front",
+    "spares_allocation",
     "allocate_redundancy",
     "availability_allocation",
     "mttf_mttr_allocation",

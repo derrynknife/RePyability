@@ -248,9 +248,17 @@ def _node_over_time(rbd, node, kind: str = "availability") -> Tuple[str, str]:
     if shelf:
         return r.REFUSED, shelf
     if node in rbd._standby:
-        message = r.refusal(partial(_long_run._standby_rates, rbd, node))
+        message = r.refusal(
+            partial(_long_run._require_standby_over_time, rbd, node)
+        )
         if message:
             return r.REFUSED, message
+        if _long_run._standby_by_cycle(rbd, node):
+            return (
+                r.NUMERICAL,
+                "the regeneration cycle of a cold standby pair with one "
+                "repair at a time, as a renewal equation on a grid",
+            )
         if rbd._standby[node].key == "markov":
             return (
                 r.NUMERICAL,
@@ -592,6 +600,11 @@ def _availability_curves(
                 plain.append((node, start, node in degrading))
         if memo is not None and key is not None:
             memo[(key, counts)] = curves[node]
+    # A fault tree's events that are not repaired, and so no components,
+    # follow curves of their own (see _event_curves.Structured).
+    unrepaired = getattr(rbd, "_unrepaired_curves", None)
+    if unrepaired is not None:
+        curves.update(unrepaired())
     # The nodes a shutdown holds off line, held down inside its windows
     # (see _shutdowns.MaskedCurve).
     return _shutdowns.masked_curves(rbd, curves)
@@ -684,6 +697,8 @@ def _node_curve(
     if _demands.demand_times_life(rbd, node) is not None:
         return _demands.demand_curve(rbd, node, start)
     if node in rbd._standby:
+        if _long_run._standby_by_cycle(rbd, node):
+            return _pair_curve(rbd, node, horizon, start)
         return _standby_curve(rbd, node, start)
     if _requirements._upgrade_kind(rbd, node) not in (None, "plan"):
         return _upgraded_curve(rbd, node, horizon, degrading, start)
@@ -1370,6 +1385,50 @@ def _uniformized(what: str, generator, start, steady, vectors):
             f"{what} Markov chain cannot be followed over time here: "
             f"{error}. Simulate it with availability()."
         ) from None
+
+
+def _pair_curve(rbd, node, horizon: float, start: Optional[NodeState] = None):
+    """A cold standby pair of lives or repairs that are not exponential,
+    one repair at a time, over ``[0, horizon]`` from new (see
+    ``_standby_cycle.over_time``): on a grid of ``_POINT_STEPS`` steps
+    over a typical life, only as long as it takes to settle at its
+    long-run values, which the curve holds after; or, for a ``start``
+    that is stationary, in its long-run state throughout."""
+    from repyability.rbd import _standby_cycle
+
+    _long_run._require_standby_over_time(rbd, node)
+    component = rbd.components[node]
+    life, repair = component.reliability, component.time_to_replace
+    values = _long_run._standby_long_run(rbd, node)
+    if start is not None and start.stationary:
+        return _standby_cycle.steady(values)
+    scale = _up_scale(life, None)
+    cycle = 1.0 / values.unit_failure_frequency
+    horizon = max(horizon, 0.0)
+    step = horizon / 1024.0 if horizon > 0.0 else np.inf
+    if np.isfinite(scale):
+        step = min(step, scale / _POINT_STEPS)
+    if not np.isfinite(step):
+        step = 1.0
+    end = min(max(horizon, 16.0 * step), max(8.0 * cycle, 16.0 * step))
+    while True:
+        n = int(np.ceil(end / step))
+        if 2 * n > _POINT_MAX:
+            raise NotImplementedError(
+                f"Component {node!r} would need more than {_POINT_MAX} "
+                f"grid points to follow its availability to {end} (its "
+                f"typical life is about {scale:.3g}): estimate it by "
+                "simulation, with availability()."
+            )
+        curve = _standby_cycle.over_time(life, repair, step, n)
+        if end >= horizon or curve.settled(values):
+            break
+        end = min(
+            horizon,
+            _settling_end(curve, 1.0 - values.unavailability, cycle, end),
+        )
+    curve.long_run = values
+    return curve
 
 
 def _standby_curve(rbd, node, start: Optional[NodeState] = None):

@@ -618,7 +618,9 @@ def fault_tree_kinds():
     distributions, a fit with its covariance) and as both, a repeated
     event, common-cause groups of each model and basis, a NOT gate, a
     functional dependency, dynamic gates integrated or shared, and events
-    repaired or tested (#809), repeated or under a NOT gate."""
+    repaired or tested (#809), repeated or under a NOT gate, beside fixed
+    probabilities and lives that are not repaired, and in common-cause
+    groups (#831)."""
     unit = W([100, 2])
     gates = {"top": ("or", ["pair", "c"]), "pair": ("and", ["a", "b"])}
     rest = {"b": W([80, 1.5]), "c": E([0.002])}
@@ -737,6 +739,20 @@ def fault_tree_kinds():
                 "not a": ("not", ["a"]),
             },
             repaired,
+        ),
+        # Repaired events beside a fixed probability (#831): a long run.
+        "repaired, with a probability": FaultTree(
+            gates, {"a": repaired["a"], "b": repaired["b"], "c": 0.002}
+        ),
+        # Beside a life that is not repaired too: no long run.
+        "repaired, with a probability and a life": FaultTree(
+            gates, {"a": repaired["a"], "b": W([400, 1.5]), "c": 0.002}
+        ),
+        # Common cause over repaired events: their groups' chains.
+        "repaired, common cause": FaultTree(
+            gates,
+            {"a": repaired["c"], "b": repaired["c"], "c": repaired["b"]},
+            ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.1, basis="rate"))],
         ),
     }
 
@@ -1172,6 +1188,37 @@ def repairable_kinds():
             "demand": system(
                 unit(reliability=FIXED(0.1), demand_rate=0.05, repair_cost=5.0)
             ),
+            # A life that wears out with a demand mode beside it (a pump
+            # that wears and may fail to start): competing risks, renewed
+            # together, a life of the summed hazard, which every route
+            # takes as it takes any life.
+            "life with a demand mode": system(
+                unit(
+                    demand={"probability": 0.1, "rate": 0.05},
+                    repair_cost=5.0,
+                )
+            ),
+            # A life that wears out with demands at set times, or on a
+            # plan of rates that changes, beside it: competing risks
+            # renewed together, on the diagram's clock, so simulated.
+            "life with demands at set times": system(
+                unit(
+                    demand={
+                        "probability": 0.1,
+                        "times": [50.0, 120.0, 200.0, 260.0],
+                    },
+                    repair_cost=5.0,
+                )
+            ),
+            "life with a demand plan": system(
+                unit(
+                    demand={
+                        "probability": 0.1,
+                        "plan": {"times": [0.0, 150.0], "rates": [0.1, 0.02]},
+                    },
+                    repair_cost=5.0,
+                )
+            ),
             # Demands at set times (UC-73): a life that ends only at them,
             # on the calendar, exact over a window and simulated.
             "demand times": system(
@@ -1422,6 +1469,35 @@ def repairable_kinds():
                         "reliability": W([1000.0, 2.5]),
                         "repairability": W([300.0, 1.5]),
                         "standby": {"units": 2, "k": 1},
+                        "repair_cost": 3.0,
+                    }
+                },
+                repair_crews=1,
+                downtime_cost_rate=5.0,
+            ),
+            "cold standby pair, Weibull, a crew each": RepairableRBD(
+                [("s", "a"), ("a", "t")],
+                {
+                    "a": {
+                        "reliability": W([1000.0, 2.5]),
+                        "repairability": W([300.0, 1.5]),
+                        "standby": {"units": 2, "k": 1},
+                        "repair_cost": 3.0,
+                    }
+                },
+                downtime_cost_rate=5.0,
+            ),
+            "cold standby pair, Weibull, failing switch": RepairableRBD(
+                [("s", "a"), ("a", "t")],
+                {
+                    "a": {
+                        "reliability": W([1000.0, 2.5]),
+                        "repairability": W([300.0, 1.5]),
+                        "standby": {
+                            "units": 2,
+                            "k": 1,
+                            "switching_probability": 0.9,
+                        },
                         "repair_cost": 3.0,
                     }
                 },
@@ -2054,7 +2130,8 @@ def event_tree_kinds():
     protection layers alone (LOPA), with paths that do not ask a heading;
     independent heading trees; trees sharing a support event; a heading
     tree with a NOT gate; lifetime models; and repaired events with an
-    initiator tree of repaired events."""
+    initiator tree of repaired events, and a repaired heading beside a
+    protection layer."""
     from repyability import EventTree
 
     def tree(top, inputs, events, kind="or"):
@@ -2182,8 +2259,24 @@ def event_tree_kinds():
             ),
         ],
     )
+    # A repaired heading beside a protection layer (#831).
+    layered = EventTree(
+        0.2,
+        [
+            ("alarm", 0.1),
+            (
+                "backup",
+                tree(
+                    "no backup",
+                    ["diesel", "start"],
+                    {"diesel": spec(0.02), "start": 0.01},
+                ),
+            ),
+        ],
+    )
     return {
         "protection layers (LOPA)": lopa,
+        "a repaired heading beside a protection layer": layered,
         "independent headings": independent,
         "a shared support event": shared,
         "a heading with a NOT gate": not_gate,

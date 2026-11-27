@@ -19,7 +19,7 @@ from repyability import (
     RepairableRBD,
     SimulatedSparesStock,
 )
-from repyability.rbd import _event_loop, _shelves
+from repyability.rbd import _event_loop, _importances, _shelves
 
 E = surv.Exponential.from_params
 ONE = [("s", "p"), ("p", "t")]
@@ -939,6 +939,12 @@ MODEL_FREE = {
     "minimum_effort_allocation",
 }
 
+#: The methods that gather other methods' results, with what they gather.
+#: Such a method's route is the worst of those it works out, so it is
+#: exact when any of them is: it is held to what it gathers, each of which
+#: is checked on its own here, and to working out only the model-free ones.
+BUNDLES = {"importances": _importances.MEASURES}
+
 
 def spec_shelved():
     """The catalogue's diagrams with a shelf, and each kind a shelf takes
@@ -975,7 +981,18 @@ def test_no_exact_method_takes_a_shelf(name):
         for method, route in report.items()
         if route.route in (routes.EXACT, routes.NUMERICAL)
     }
-    assert computed <= MODEL_FREE, computed - MODEL_FREE
+    alone = computed - set(BUNDLES)
+    assert alone <= MODEL_FREE, alone - MODEL_FREE
+    # A bundle works out only the model-free methods it gathers, and lists
+    # every other with the reason its own method refuses.
+    for bundle, gathered in BUNDLES.items():
+        here = set(gathered) & set(report)
+        table = getattr(rbd, bundle)()
+        assert set(table.measures) == here & computed <= MODEL_FREE
+        assert table.refused == {
+            m: report[m].reason for m in here - set(table.measures)
+        }
+        assert all("shelf of spares" in why for why in table.refused.values())
     assert report["availability"].route == routes.SIMULATED
     assert report["availability"].engine == "python"
     if outside_groups(rbd) - set(rbd.in_or_out):

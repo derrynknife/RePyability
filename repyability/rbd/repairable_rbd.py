@@ -32,6 +32,7 @@ from repyability.non_repairable import NonRepairable
 from repyability.rbd import (
     _ccf_modules,
     _covariate_schedule,
+    _echelons,
     _importance_time,
     _sensitivity,
     _spares,
@@ -72,6 +73,7 @@ from repyability.rbd.results import (
     SimulatedSparesStock,
     SimulatedSwitchTime,
     SimulationSamples,
+    SparesAllocation,
     SparesDemand,
     SparesStock,
     TimelineSimulation,
@@ -425,9 +427,14 @@ class RepairableRBD(RBD):
           that its failures are an exponential life of rate the demand
           rate times the probability, which every analysis takes. Its
           levers are the probability and the rate; a probability of 0
-          makes it a junction. A life that wears out cannot take one:
-          draw the demand mode as a component of its own, in series
-          (see the guide's "Failing on demand"). In its place,
+          makes it a junction. A life that wears out takes its demand
+          mode as ``"demand"``, a dict of the ``"probability"`` and the
+          demands' ``"rate"``: the two compete and are renewed together,
+          the unit's hazard the life's plus the rate times the
+          probability (see the guide's "Failing on demand"); in place of
+          the rate, its set ``"times"`` or a ``"plan"`` of rates, which
+          stay on the calendar, so only the simulations take it. In its
+          place,
           ``"demand_times"`` calls the unit on at set times (its life
           ends only at one; exact over a window, simulated, the long
           run refused), and ``"demand_plan"`` at a rate that changes
@@ -2252,6 +2259,210 @@ class RepairableRBD(RBD):
             parts=parts,
             mc_samples=mc_samples,
             seed=seed,
+        )
+
+    def spares_front(
+        self,
+        bases: Mapping[Hashable, int],
+        parts: Mapping[Hashable, Mapping[str, Any]],
+        *,
+        budget: Optional[float] = None,
+        target_availability: Optional[float] = None,
+        method: str = "vari-metric",
+    ) -> List[SparesAllocation]:
+        """The spend on repairable spares against a fleet's availability,
+        over two echelons: the bases the systems run from, and a depot
+        behind them.
+
+        A failed part is swapped for one from its base's shelf, and is
+        repaired at the base (with probability ``base_repair_fraction``)
+        or sent to the depot, the base ordering one from the depot at
+        once. Every shelf is replenished one for one. A system with no
+        part to fit waits for one: a backorder. The stocks are those of
+        Sherbrooke's METRIC and VARI-METRIC (see the
+        [spares guide](../guide/spares.md#bases-and-a-depot)), chosen by
+        marginal analysis: each point of the front has the fewest
+        expected backorders of any stock at its spend or less. Every part
+        is taken as needed (a series system), and the demand as going on
+        while a system waits.
+
+        Parameters
+        ----------
+        bases : dict
+            How many systems each base runs, ``{base: systems}``.
+        parts : dict
+            Each part's spec, ``{part: {...}}``, with:
+
+            - ``"price"``: what one spare costs (required).
+            - ``"base_repair_fraction"``: the chance a failure is
+              repaired at the base (by default 1: no depot).
+            - ``"base_repair_time"``, ``"depot_repair_time"``: the mean
+              time a repair takes at each, in the models' unit.
+            - ``"ship_time"``: the mean time from a base's order to the
+              part's arrival, once the depot has one to send.
+            - ``"demand_rate"``: failures per system per unit time. By
+              default the long-run replacement rates of the part's
+              components in the diagram (as ``spares_stock`` counts
+              them): its ``"nodes"``, or the component of its name.
+            - ``"quantity"``: how many a system has (by default the
+              number of its nodes).
+        budget : float, optional
+            The most to spend: the front stops before the first point
+            past it.
+        target_availability : float, optional
+            The front stops at the first point that reaches it. One of
+            ``budget`` and ``target_availability`` is needed.
+        method : str, optional
+            ``"vari-metric"`` (the default: a base's pipeline with its
+            variance, a negative binomial) or ``"metric"`` (a Poisson
+            pipeline, the textbook's first model, which understates the
+            backorders).
+
+        Returns
+        -------
+        list of SparesAllocation
+            The front's points by increasing spend, from nothing held:
+            each with every site's stock of every part, the expected
+            backorders (falling along the list) and the availability.
+
+        Raises
+        ------
+        ValueError
+            On invalid input.
+        NotImplementedError
+            If the diagram is not a series system or has a sub-system,
+            or a part's demand cannot be taken from its components (as
+            ``spares_stock`` refuses them): give its ``"demand_rate"``.
+
+        References
+        ----------
+        C. C. Sherbrooke, *Optimal Inventory Modeling of Systems:
+        Multi-Echelon Techniques*, 2nd ed., Kluwer, 2004, ch. 2 and 3.
+
+        Examples
+        --------
+        Two bases of 12 and 8 systems; a pump that fails every 2,000
+        hours, 30% of them repaired at the base in 48 hours and the rest
+        at the depot in 600, an order taking 72 hours to arrive:
+
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> rbd = RepairableRBD(
+        ...     [("s", "pump"), ("pump", "t")],
+        ...     {
+        ...         "pump": {
+        ...             "reliability": surv.Exponential.from_params([5e-4]),
+        ...             "repairability": "instant",
+        ...         }
+        ...     },
+        ... )
+        >>> pump = {"price": 12000.0, "base_repair_fraction": 0.3,
+        ...         "base_repair_time": 48.0, "depot_repair_time": 600.0,
+        ...         "ship_time": 72.0}
+        >>> front = rbd.spares_front(
+        ...     {"north": 12, "south": 8}, {"pump": pump}, budget=60000.0)
+        >>> for point in front:
+        ...     print(point.spend, point.depot_stock["pump"],
+        ...           point.base_stock["north"]["pump"],
+        ...           point.base_stock["south"]["pump"],
+        ...           round(point.backorders, 4), round(point.availability, 4))
+        0.0 0 0 0 4.848 0.7576
+        12000.0 1 0 0 3.863 0.8069
+        24000.0 2 0 0 2.941 0.853
+        36000.0 3 0 0 2.1512 0.8924
+        48000.0 3 1 0 1.4859 0.9257
+        60000.0 3 1 1 0.9502 0.9525
+        """
+        _shutdowns.refuse(self, "spares_front")
+        return _echelons.spares_front(
+            self,
+            bases,
+            parts,
+            budget=budget,
+            target_availability=target_availability,
+            method=method,
+        )
+
+    def spares_allocation(
+        self,
+        bases: Mapping[Hashable, int],
+        parts: Mapping[Hashable, Mapping[str, Any]],
+        *,
+        target_availability: Optional[float] = None,
+        budget: Optional[float] = None,
+        method: str = "vari-metric",
+    ) -> SparesAllocation:
+        """The stock of repairable spares at each base and the depot for
+        a fleet availability target at the least spend, or the best
+        within a budget: a point of
+        [`spares_front`][repyability.RepairableRBD.spares_front].
+
+        Parameters
+        ----------
+        bases : dict
+            How many systems each base runs, as for ``spares_front``.
+        parts : dict
+            Each part's spec, as for ``spares_front``.
+        target_availability : float, optional
+            The fleet availability to reach: the cheapest point of the
+            front that does is returned.
+        budget : float, optional
+            The most to spend. Alone, the front's last point within it
+            is returned; with a target, the target must be reached
+            within it.
+        method : str, optional
+            ``"vari-metric"`` (the default) or ``"metric"``, as for
+            ``spares_front``.
+
+        Returns
+        -------
+        SparesAllocation
+            Every site's stock of every part, with its spend, expected
+            backorders and availability.
+
+        Raises
+        ------
+        ValueError
+            On invalid input, or if no point of the front within the
+            budget reaches the target.
+        NotImplementedError
+            As for ``spares_front``.
+
+        Examples
+        --------
+        The pumps of ``spares_front``'s example, for 95% of the fleet
+        not waiting for one:
+
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> rbd = RepairableRBD(
+        ...     [("s", "pump"), ("pump", "t")],
+        ...     {
+        ...         "pump": {
+        ...             "reliability": surv.Exponential.from_params([5e-4]),
+        ...             "repairability": "instant",
+        ...         }
+        ...     },
+        ... )
+        >>> pump = {"price": 12000.0, "base_repair_fraction": 0.3,
+        ...         "base_repair_time": 48.0, "depot_repair_time": 600.0,
+        ...         "ship_time": 72.0}
+        >>> held = rbd.spares_allocation(
+        ...     {"north": 12, "south": 8}, {"pump": pump},
+        ...     target_availability=0.95)
+        >>> held.spend, held.depot_stock, held.base_stock
+        (60000.0, {'pump': 3}, {'north': {'pump': 1}, 'south': {'pump': 1}})
+        >>> round(held.availability, 4)
+        0.9525
+        """
+        _shutdowns.refuse(self, "spares_allocation")
+        return _echelons.spares_allocation(
+            self,
+            bases,
+            parts,
+            budget=budget,
+            target_availability=target_availability,
+            method=method,
         )
 
     def allocate_redundancy(

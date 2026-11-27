@@ -216,6 +216,8 @@ def _unsupported_level(
             # draws its lives in operating time (see _kernel._operating).
             if isinstance(clocked, _demands.DemandTimesLife):
                 return f"the demand times of node {name!r}"
+            if isinstance(clocked, _demands.LifeWithPlannedDemands):
+                return f"the demands beside the life of node {name!r}"
             what = (
                 "covariate schedule"
                 if clocked.lead.endswith("covariate schedule")

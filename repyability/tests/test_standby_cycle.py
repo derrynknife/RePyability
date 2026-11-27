@@ -94,14 +94,9 @@ def test_a_wear_out_pair_against_the_simulation():
 @pytest.mark.parametrize(
     "words, rbd",
     [
-        ("both units", pair(W([1000.0, 2.5]), E([0.01]), crews=None)),
         (
             "warm spare",
             pair(W([1000.0, 2.5]), E([0.01]), dormancy_factor=0.5),
-        ),
-        (
-            "switching",
-            pair(W([1000.0, 2.5]), E([0.01]), switching_probability=0.9),
         ),
     ],
 )

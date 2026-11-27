@@ -12,6 +12,140 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- A `FaultTree` of repaired or tested events may now mix them with fixed
+  probabilities (a per-demand failure, a human error) and lives that are
+  not repaired over the mission, which it refused before. A fixed
+  probability is down with it at every time and never starts the top
+  event over time; a life that is not repaired is down from its end on,
+  `F(t)`, and fails at its density. `point_unavailability`,
+  `mean_unavailability(t)`, `failure_frequency`, `expected_failures` and
+  the importance measures take both; the long run
+  (`mean_unavailability()`, `system_failure_frequency`) takes fixed
+  probabilities and refuses a life that is not repaired, which has none.
+  `to_repairable_rbd()` refuses a mixed tree, as a diagram's components
+  are repaired. An `EventTree` may likewise mix repaired headings with
+  protection layers and probabilities. Checked against closed forms,
+  numerical integrals, a unit started in its steady state in the
+  diagram (to 1e-12) and a seeded simulation (within 4 standard errors);
+  trees that mix nothing give the same values to the bit.
+- Common-cause groups over a `FaultTree`'s repaired events (`ccf_groups`,
+  which it refused before): its values over time and in the long run are
+  its groups' chains', conditioned on module by module over the tree's
+  structure, as a `RepairableRBD` with the same groups gives them (to
+  1e-12), and `to_repairable_rbd()` passes the groups on. Such a tree
+  refuses `failure_frequency(t)`, the importance measures and the Open-PSA
+  export for now, naming what to use; a group's members must be repaired
+  events.
+
+- A switch that can fail (`"switching_probability"` below 1) in the
+  long-run values of a cold standby pair of any lives and repairs, with
+  one repair at a time and with both units repaired at once, which only
+  a simulation gave. After a failed switch the pair is down while the
+  failed unit is repaired, which then operates again with the spare
+  still waiting, so the pair starts afresh in a second state (a unit
+  starting to operate with the other ready); a switch that never works
+  leaves one unit. Checked: exponential units equal the Markov chain to
+  1e-9 for three rate pairs, switches of 0.9, 0.5 and 0 and both crew
+  settings (within 4e-11); exponential repairs against the two-state
+  closed form (1e-7); Weibull(1000, 2.5) lives, Weibull(300, 1.5)
+  repairs and a switch of 0.9, 0.962044 with one crew against 0.962088
+  simulated (400 runs of 1e6 h, standard error 1.8e-4, +0.3 SE) and
+  0.964939 with a crew each against 0.965220 (standard error 1.6e-4,
+  +1.8 SE). Over time such a pair is refused, pointing to the
+  simulation.
+- A life that wears out with a demand mode beside it, in one component
+  of a `RepairableRBD` (a pump that wears and may fail to start): a
+  spec's `"demand": {"probability": p, "rate": d}` beside its
+  `"reliability"`. The two compete and are renewed together, so the
+  unit's survival is `R(t) exp(-d p t)`, a life every exact, numerical
+  and simulated analysis takes; with an exponential life of rate `λ` it
+  is the exponential of rate `λ + d p`, to the bit. The spec is kept as
+  given: saved, held by a `UnitPlan`'s `demand` and listed as the levers
+  `demand.probability` and `demand.rate`. A duty moves the life alone,
+  or the demands too with `"demand_basis": "operating"`. A
+  `"demand_rate"` on a life is still refused, now naming `"demand"`.
+- Demands at set times, or on a plan of rates that changes, beside a
+  life that wears out, in one component: a spec's `"demand"` takes
+  `"times"` or `"plan"` in place of `"rate"`. The demands compete with
+  the life and are renewed with it, but stay on the calendar, so a unit
+  put into service at `t0` at age `a` survives while the life's hazard
+  from `a`, plus `-log(1 - p)` for each demand met (or `p` times the
+  plan's expected demands), stays below its draw
+  (`LifeWithPlannedDemands`). Only the simulations take it (the Python
+  engine); the exact and numerical analyses refuse it, naming them. From
+  new it equals the life and the set-times demand component in series
+  (to 1e-12); a hand-worked case with a fixed repair (Weibull(40, 1.5),
+  one demand failing it with 0.3, repairs of 35, over 68) agrees with
+  4000 seeded simulations within 4 standard errors; set times every `h`
+  with `p = c h` close in on the rate `c` as `h` shrinks; and a plan of
+  one rate is that rate, to the bit. It is saved, held by a `UnitPlan`'s
+  `demand` and has the lever `demand.probability`; a duty or a
+  `"demand_basis"` is refused with it. A `"demand"` given both a rate
+  and times now says to give one.
+
+- A cold standby pair of any lives and repairs with one repair at a time
+  (`repair_crews=1`) over time, from new, which only a simulation gave:
+  `point_availability`, `point_unavailability`, `mission_availability`,
+  `expected_failures`, `expected_events`, the expected costs and the
+  other values over a window, and from a stationary `NodeState` its
+  long-run state. Both units are ready at 0; the pair first regenerates
+  when the first fails and then after each cycle, so its unavailability
+  and its expected failures and repairs solve a renewal equation, worked
+  out on a grid as a unit's is (measures that keep each cell's mass and
+  mean, the renewals by a power series' inverse) on two grids, one of
+  half the other's step, extrapolated. `availability()` and `cost()` now
+  report such a pair's exact means by default (their simulations are
+  unchanged). Checked: exponential units equal the Markov chain followed
+  by uniformization to 1e-9 at the grid's points (within 2e-10), and
+  within the bound of a linear curve between them; Weibull and lognormal
+  pairs' Laplace transforms against the models' own by quadrature
+  (1e-6); Weibull(1000, 2.5) lives and Weibull(300, 1.5) repairs over
+  2,500 h 0.992249 against 0.992008 simulated (20,000 runs, standard
+  error 2.1e-4, -1.2 SE; 400,000 runs: 0.992309, +1.3 SE) and 0.1279
+  failures against 0.1328 (+1.9 SE; 400,000 runs: 0.1275, -0.7 SE);
+  Weibull(1000, 1.5) lives with LogNormal(5, 0.6) repairs over 1,200 h
+  0.994124 against 0.993631 (-2.1 SE; 400,000 runs: 0.994115, -0.2 SE)
+  and 0.0679 failures against 0.0722 (+2.3 SE; 400,000 runs: 0.0680,
+  +0.1 SE). Over time, the pair with both units repaired at once, warm
+  spares, failing switches and more units stay simulated.
+- Long-run values of a cold standby pair of any lives and repairs with
+  both units repaired at once (a crew each, the default), which only a
+  simulation gave (one repair at a time already had its cycle): two
+  units, one needed, a cold spare that switches in surely. Each time a
+  unit starts to operate, what follows depends only on how long the
+  other's repair has run, so the pair is a Markov renewal process on that
+  time; its equation is solved on a grid (the times rounded to it, from
+  the distribution functions alone, by fast Fourier transforms), halved
+  until two extrapolated solutions agree to 1e-8. `mean_availability`,
+  `mean_unavailability`, the frequencies and the cost rate take it,
+  inside larger diagrams too, and `analysis_routes()` says so. Checked:
+  exponential units equal the Markov chain to 1e-9 (within 2e-10);
+  exponential repairs against the memoryless closed form (1e-7) for
+  Weibull lives of shape 3 and 0.8 and a lognormal; an unavailability of
+  4e-13 against its quadrature; Weibull(1000, 2.5) lives and
+  Weibull(300, 1.5) repairs 0.991724 against 0.991722 simulated (400
+  runs of 1e6 h, standard error 6.4e-5, -0.03 SE), and Weibull(1000,
+  1.5) lives with LogNormal(5, 0.6) repairs 0.992867 against 0.992870
+  (standard error 4.9e-5, +0.04 SE). A pair whose lives are a small
+  fraction of its repairs warns where the grid does not settle, and is
+  refused where it cannot. Warm spares, failing switches, more units and
+  values over time stay simulated.
+- `RepairableRBD.spares_front(bases, parts, budget=, target_availability=)`
+  and `spares_allocation(...)`: repairable spares over two echelons, the
+  bases a fleet's systems run from and a depot behind them (Sherbrooke's
+  METRIC and VARI-METRIC). Each part has a price, the chance a failure
+  is repaired at the base, the base's and the depot's repair times and
+  the order-and-ship time; its demand is the diagram's long-run
+  replacement rate, or a `"demand_rate"` given. The front is the spend
+  against the fleet's availability by marginal analysis, each point (a
+  `SparesAllocation`) with every site's stock of every part, the
+  expected backorders and each base's availability; the allocation is
+  its cheapest point for a target, or its best within a budget. A base's
+  pipeline has its variance by default (a negative binomial);
+  `method="metric"` gives the textbook's Poisson numbers. Every part is
+  taken as needed: a diagram that is not a series system is refused.
+  See the spares guide, "Bases and a depot".
+
 - An upgraded component that keeps the unit in service until its next
   failure or due replacement (the upgrade's `"replace_in_service":
   False`) is worked out over a horizon on its own or under age

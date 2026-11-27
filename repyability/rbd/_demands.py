@@ -24,7 +24,7 @@ A plan is on the diagram's clock unless the spec's ``"demand_basis"`` is
 """
 
 import math
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 
@@ -40,6 +40,19 @@ BASES = ("calendar", "operating")
 
 #: The spec keys that say when demands come, one at most.
 DEMAND_KEYS = ("demand_rate", "demand_times", "demand_plan")
+
+#: The spec key of a demand mode beside a life that wears out: a dict of
+#: the ``"probability"`` that a demand fails the unit and when demands
+#: come: at a ``"rate"`` (see ``LifeWithDemands``), at set ``"times"`` or
+#: on a ``"plan"`` of rates that changes (see ``LifeWithPlannedDemands``).
+LIFE_KEY = "demand"
+
+#: The keys of a spec's ``"demand"`` that say when demands come, one of
+#: them.
+LIFE_WHEN_KEYS = ("rate", "times", "plan")
+
+#: The keys of a spec's ``"demand"``.
+LIFE_DEMAND_KEYS = ("probability",) + LIFE_WHEN_KEYS
 
 #: What a block called on at set times or on a plan that changes does not
 #: take, and what each is.
@@ -62,11 +75,11 @@ def demand_basis(node, spec: dict) -> str:
     if basis is None:
         return "calendar"
     one_of(f"Component {node!r}: the demand_basis", basis, BASES)
-    if not any(spec.get(key) is not None for key in DEMAND_KEYS):
+    if not any(spec.get(key) is not None for key in DEMAND_KEYS + (LIFE_KEY,)):
         raise ValueError(
             f"Component {node!r}: a demand_basis says what a demand plan "
             "is counted in, and it has none: give a demand_rate, "
-            "demand_times or demand_plan with it, or drop it."
+            "demand_times, demand_plan or demand with it, or drop it."
         )
     return str(basis)
 
@@ -213,6 +226,8 @@ def on_demand(node, component: dict, built: dict) -> dict:
 
     from ._duty import duty_value
 
+    if component.get(LIFE_KEY) is not None:
+        return _with_demands(node, component, built)
     p = demand_probability(node, component)
     if p is None:
         return component
@@ -262,6 +277,175 @@ def on_demand(node, component: dict, built: dict) -> dict:
         built[key] = surv.Exponential.from_params([p])
     out["reliability"] = built[key]
     out["duty"] = plan
+    return out
+
+
+def life_demand(node, spec: dict) -> Optional[Tuple[float, str, Any]]:
+    """A spec's ``"demand"`` beside its life, checked: ``(p, when,
+    value)``, the probability that a demand fails the unit (in [0, 1]),
+    and when demands come, one of ``LIFE_WHEN_KEYS``: a ``"rate"`` (a
+    finite number above 0), set ``"times"`` (``demand_times_value``'s
+    array) or a ``"plan"`` (``demand_plan_value``'s ``DutySchedule``, or
+    its one rate); None for a spec with none. Its reliability must be a
+    life (a probability per demand takes a ``"demand_rate"``), with no
+    other demand key, and no group of units, covariate schedule or
+    upgrade beside it (``_REFUSED_KEYS``)."""
+    from ._model_utils import is_fixed_probability
+
+    demand = spec.get(LIFE_KEY)
+    if demand is None:
+        return None
+    if not isinstance(demand, dict) or not set(demand) <= set(
+        LIFE_DEMAND_KEYS
+    ):
+        raise ValueError(
+            f"Component {node!r}: its demand is the demand mode beside its "
+            "life, a dict of the 'probability' that a demand fails the "
+            "unit and when demands come: their 'rate', set 'times' or a "
+            "'plan' of rates, e.g. {'probability': 0.02, 'rate': 0.5}; "
+            f"got {demand!r}."
+        )
+    p: Any = demand.get("probability")
+    if not is_number(p) or not 0.0 <= float(p) <= 1.0:
+        raise ValueError(
+            f"Component {node!r}: its demand's probability must be the "
+            "chance that a demand fails the unit, a number in [0, 1]; got "
+            f"{p!r}."
+        )
+    when = [key for key in LIFE_WHEN_KEYS if demand.get(key) is not None]
+    if len(when) > 1:
+        raise ValueError(
+            f"Component {node!r}: its demand is given "
+            f"{' and '.join(map(repr, when))}: its demands come at one "
+            "'rate', at set 'times' or on a 'plan' of rates; give one."
+        )
+    value: Any
+    if when == ["times"]:
+        try:
+            value = demand_times_value(node, demand["times"])
+        except (TypeError, ValueError) as refused:
+            raise type(refused)(
+                str(refused).replace("demand_times", "its demand's times")
+            ) from None
+    elif when == ["plan"]:
+        value = demand_plan_value(node, demand["plan"])
+    else:
+        value = demand.get("rate")
+        if not is_number(value) or not (0.0 < float(value) < math.inf):
+            raise ValueError(
+                f"Component {node!r}: its demand's rate must be a finite "
+                "number above 0, the demands per unit of time (or give "
+                f"its set 'times' or a 'plan'); got {value!r}."
+            )
+        value = float(value)
+    given = [key for key in DEMAND_KEYS if spec.get(key) is not None]
+    if given:
+        raise ValueError(
+            f"Component {node!r} is given a demand and {given[0]}: a "
+            "demand is the demand mode beside a life that wears out, and "
+            f"a {given[0]} goes with a probability of failing per demand "
+            "as the life; give one."
+        )
+    life = spec.get("reliability")
+    if is_fixed_probability(life):
+        raise ValueError(
+            f"Component {node!r}: its reliability is a probability of "
+            "failing per demand, which takes the demands' rate as "
+            "'demand_rate'; a 'demand' goes beside a life that wears out."
+        )
+    for key, what in _REFUSED_KEYS:
+        if spec.get(key) is not None:
+            raise ValueError(
+                f"Component {node!r} is given a demand mode beside its "
+                f"life, and {what} ({key!r}), which are not taken "
+                "together: draw the demand mode as a component of its "
+                "own in series, with the probability as a "
+                "surpyval.FixedEventProbability and its demand_rate, "
+                "demand_times or demand_plan."
+            )
+    return float(p), when[0] if when else "rate", value
+
+
+def _with_demands(node, component: dict, built: dict) -> dict:
+    """``component`` with a demand mode beside its life (see
+    ``life_demand``) given the life of the two. At a rate (or on a plan
+    of one rate): a ``LifeWithDemands``, or for a plain exponential life
+    of rate ``λ`` (with no duty, or the demands counted in operating
+    time) ``Exponential(λ + d p)``, the competing exponentials' first.
+    At set times or on a plan that changes: a ``LifeWithPlannedDemands``,
+    on the diagram's clock, with no duty (the life and the demands are
+    given on the calendar). The demands are on the diagram's clock unless
+    ``"demand_basis"`` is ``"operating"``; on the calendar, a duty moves
+    the life alone, and must be a share (a duty plan that changes moves a
+    life whose demands come at its pace). A probability of 0 leaves the
+    life as it is."""
+    import surpyval as surv
+
+    from ._duty import duty_value
+    from ._model_utils import is_exponential
+
+    given = life_demand(node, component)
+    assert given is not None
+    p, when, value = given
+    basis = demand_basis(node, component)
+    out = {
+        k: v
+        for k, v in component.items()
+        if k not in (LIFE_KEY, "demand_basis")
+    }
+    if p == 0.0:
+        return out
+    life: Any = component.get("reliability")
+    duty = component.get("duty")
+    operating = basis == "operating"
+    if isinstance(value, float):
+        # One rate (a plan of one rate is that rate).
+        d = value
+    elif duty is not None or operating:
+        raise ValueError(
+            f"Component {node!r}: its demands beside its life come at set "
+            "times or on a plan that changes, on the diagram's clock (the "
+            "calendar), and it is given a duty or a demand_basis, which "
+            "are not taken with them: give its life on the calendar (the "
+            "life's rescale_time) and the demands' times or plan on the "
+            "calendar too, and drop the duty and demand_basis."
+        )
+    else:
+        when_key: Any = (
+            value.tobytes()
+            if when == "times"
+            else (tuple(value.times), tuple(value.shares))
+        )
+        planned: Any = ("planned", id(life), when, when_key, p)
+        if planned not in built:
+            built[planned] = LifeWithPlannedDemands(
+                life, p, node=node, **{when: value}
+            )
+        out["reliability"] = built[planned]
+        return out
+    if duty is not None and not operating:
+        if not isinstance(duty_value(node, duty), float):
+            raise ValueError(
+                f"Component {node!r}: its demands are on the diagram's "
+                "clock (the calendar), and its duty plan changes over "
+                "time, which moves its life alone at a pace that changes: "
+                "give the demands in its operating time with "
+                "'demand_basis': 'operating', or a duty of one share."
+            )
+    elif operating and duty is None:
+        raise ValueError(
+            f"Component {node!r}: its demand_basis says the demands are "
+            "counted in its operating time, and it has no duty to put "
+            "that on the calendar: give a duty, or drop the demand_basis."
+        )
+    key = ("life", id(life), d, p, operating)
+    if key not in built:
+        if is_exponential(life) and (duty is None or operating):
+            rate = float(np.ravel(life.params)[0])
+            built[key] = surv.Exponential.from_params([rate + d * p])
+        else:
+            built[key] = LifeWithDemands(life, d, p, operating)
+    out["reliability"] = built[key]
     return out
 
 
@@ -331,9 +515,11 @@ def demand_probability(node, spec: dict) -> Optional[float]:
             f"Component {node!r}: a {which} goes with a probability "
             "of failing per demand (surpyval.FixedEventProbability), and "
             "its reliability is a life. For a unit that wears out and may "
-            "also fail on a demand, draw the two modes as two components "
-            f"in series: one with the life, one with the probability and "
-            f"the {which}."
+            "also fail on a demand, give the demand mode beside the life "
+            "as 'demand': {'probability': p, 'rate': d}; or, for demands "
+            "at set times or on a plan, draw the two modes as two "
+            f"components in series: one with the life, one with the "
+            f"probability and the {which}."
         )
     if spec.get("duty") is not None and demand_basis(node, spec) == "calendar":
         raise ValueError(
@@ -634,3 +820,316 @@ HOW = (
     "a sum over its demands: each fails it with its probability unless "
     "an earlier failure is still under repair"
 )
+
+
+#: The most halvings (or Newton steps) a ``LifeWithDemands`` takes to
+#: invert its cumulative hazard: enough to close a bracket of 1e300 to
+#: the last bit.
+_INVERSE_STEPS = 1100
+
+
+class LifeWithDemands:
+    """The life of a unit that wears out while it runs (``life``) and may
+    also fail when it is called on: demands a Poisson process of rate
+    ``d``, each failing a working unit with probability ``p``. The two are
+    competing risks, renewed together at a repair, so the unit's hazard
+    is the life's plus ``c = d p`` and its survival ``R(t) exp(-c t)``.
+
+    Its functions are the life's with the demands' hazard added: ``Hf``
+    the sum, ``ff`` its ``-expm1``, so that a small probability keeps its
+    digits, and ``qf`` (and the draw at a virtual age, ``aged``) the
+    inverse of ``Hf``, found by Newton's steps kept within a bracket.
+    ``operating`` says the demands are counted in the unit's operating
+    time, which a duty (``rescale_time``) then moves to the calendar with
+    the life; otherwise they are on the calendar and stay as they are.
+    """
+
+    #: Every unit fails, at the latest at a demand.
+    never_fails = 0.0
+
+    def __init__(self, life, d: float, p: float, operating: bool = False):
+        self.life = life
+        self.d = float(d)
+        self.p = float(p)
+        self.c = self.d * self.p
+        self.operating = bool(operating)
+        self._mean: Optional[float] = None
+
+    def _life(self, name: str, x) -> np.ndarray:
+        x = np.asarray(x, dtype=float)
+        with np.errstate(all="ignore"):
+            out = np.asarray(getattr(self.life, name)(x), dtype=float)
+        return out.reshape(x.shape)
+
+    def Hf(self, x):
+        x = np.asarray(x, dtype=float)
+        return self._life("Hf", x) + self.c * x
+
+    def sf(self, x):
+        x = np.asarray(x, dtype=float)
+        return self._life("sf", x) * np.exp(-self.c * x)
+
+    def ff(self, x):
+        return -np.expm1(-self.Hf(x))
+
+    def hf(self, x):
+        return self._life("hf", x) + self.c
+
+    def df(self, x):
+        return self.hf(x) * self.sf(x)
+
+    def _inverse(self, target, lo, hi) -> np.ndarray:
+        """The least ``x`` in ``[lo, hi]`` with ``Hf(x) >= target``
+        (``Hf(hi) >= target``), by Newton's steps from ``hi`` kept within
+        the bracket, which halves where a step would leave it."""
+        target, lo, hi = np.broadcast_arrays(
+            np.asarray(target, float), np.asarray(lo, float), hi
+        )
+        lo, hi, target = lo.copy(), np.array(hi, float), target.copy()
+        x = hi.copy()
+        open_ = hi > lo
+        for _ in range(_INVERSE_STEPS):
+            if not open_.any():
+                break
+            at = x[open_]
+            with np.errstate(all="ignore"):
+                gap = self.Hf(at) - target[open_]
+                step = at - gap / self.hf(at)
+            above = gap >= 0.0
+            low, h = lo[open_], hi[open_]
+            h = np.where(above, at, h)
+            low = np.where(above, low, at)
+            inside = np.isfinite(step) & (step > low) & (step < h)
+            nxt = np.where(inside, step, 0.5 * (low + h))
+            lo[open_], hi[open_] = low, h
+            x[open_] = nxt
+            done = (h - low <= 4.0 * np.spacing(h)) | (gap == 0.0)
+            idx = np.flatnonzero(open_)
+            open_[idx[done]] = False
+            x[idx[done]] = np.where(gap[done] == 0.0, at[done], h[done])
+        return x
+
+    def qf(self, q):
+        """The time by which a share ``q`` of units has failed: the least
+        ``x`` with ``Hf(x) >= -log(1 - q)``."""
+        q = np.asarray(q, dtype=float)
+        with np.errstate(all="ignore"):
+            target = -np.log1p(-q)
+            own = self._life("qf", q)
+        # The sum's hazard is at least each part's, so its quantile is at
+        # most each part's.
+        hi = np.fmin(np.where(np.isnan(own), np.inf, own), target / self.c)
+        out = np.where(q > 0.0, np.inf, 0.0)
+        finite = (q > 0.0) & np.isfinite(hi)
+        if finite.any():
+            out[finite] = self._inverse(
+                target[finite], np.zeros(finite.sum()), hi[finite]
+            )
+        return out
+
+    def aged(self, age: float, u: float) -> float:
+        """The life left to a unit at virtual age ``age``, from the
+        uniform ``u``: the ``x`` with ``Hf(age + x) = Hf(age) - log(u)``,
+        as ``_event_loop._aged_life`` draws any life."""
+        exposure = 0.0 - math.log(u) if u > 0.0 else math.inf
+        if not math.isfinite(exposure):
+            return math.inf
+        start = float(self.Hf(np.array([age]))[0])
+        hi = age + exposure / self.c
+        x = self._inverse(
+            np.array([start + exposure]), np.array([age]), np.array([hi])
+        )
+        return max(float(x[0]) - age, 0.0)
+
+    def mean(self) -> float:
+        """The mean life, the integral of ``sf`` (see
+        ``_mean_lifetime``)."""
+        if self._mean is None:
+            from ._mean_lifetime import mean_lifetime, model_kinks, model_knots
+
+            self._mean = mean_lifetime(
+                self.sf, model_knots(self), model_kinks(self)
+            )
+        return self._mean
+
+    def random(self, size) -> np.ndarray:
+        return self.qf(np.random.uniform(size=size))
+
+    def rescale_time(self, factor: float, *, unit: Any = None):
+        """The life on the calendar of a unit that runs a share
+        ``factor`` of the time: the life moved (surpyval's
+        ``rescale_time``), and the demands with it when they are counted
+        in operating time."""
+        from ._duty import on_calendar
+
+        life = on_calendar(None, self.life, float(factor))
+        d = self.d * float(factor) if self.operating else self.d
+        return LifeWithDemands(life, d, self.p, self.operating)
+
+    def to_dict(self) -> dict:
+        from .serialisation import serialise_model
+
+        return {
+            "life": serialise_model(self.life),
+            "demand_rate": self.d,
+            "probability": self.p,
+            "operating": self.operating,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "LifeWithDemands":
+        from .serialisation import deserialise_model
+
+        return cls(
+            deserialise_model(d["life"]),
+            d["demand_rate"],
+            d["probability"],
+            bool(d.get("operating", False)),
+        )
+
+    def __repr__(self) -> str:
+        return (
+            f"LifeWithDemands({self.life!r}, demand_rate={self.d:g}, "
+            f"p={self.p:g})"
+        )
+
+
+class LifeWithPlannedDemands(ClockLife):
+    """The life of a unit that wears out while it runs (``life``) and may
+    also fail when it is called on, each demand failing a working unit
+    with probability ``p``: demands at the set ``times`` of the diagram's
+    clock, or at the expected rate of a ``plan`` that changes over time
+    (a ``schedule.DutySchedule`` of rates of ``USE``, its expected demands
+    ``Λ(t)``). The two are competing risks, renewed together at a repair:
+    a unit put into service at ``t0`` at age ``a`` survives ``s`` more
+    with chance ``exp(-G)``, ``G`` the life's ``H(a + s) - H(a)`` plus
+    ``-log(1 - p)`` for each demand in ``(t0, t0 + s]``, or plus ``p
+    (Λ(t0 + s) - Λ(t0))`` on a plan. The demands are the calendar's, not
+    restarted by a repair, so it is no renewal process, and only the
+    simulations take it (the Python engine); from new at 0 its survival
+    is ``R(t) (1 - p)^N(t)``, or ``R(t) exp(-p Λ(t))`` on a plan.
+    """
+
+    def __init__(self, life, p: float, times=None, plan=None, node=None):
+        from ._duty import PlannedLife
+
+        if (times is None) == (plan is None):
+            raise ValueError("Give the demands' times or their plan.")
+        self.life = life
+        self.p = float(p)
+        self.node = node
+        self.times = None if times is None else np.asarray(times, float)
+        self.plan = plan
+        if self.times is not None:
+            self.lead = (
+                "wears out and is called on at set times (its demand's "
+                "times)"
+            )
+            # Each demand a step of the hazard, at no rate between.
+            self._knots = self.times
+            self._rates = np.zeros(self.times.size + 1)
+            self._step = -math.log1p(-self.p) if self.p < 1.0 else math.inf
+        else:
+            self.lead = (
+                "wears out and is called on by a demand plan that changes "
+                "over time (its demand's plan)"
+            )
+            # Between the plan's times, demands at its rates.
+            self._expected = PlannedLife(None, plan)
+            self._knots = self._expected._times[1:]
+            self._rates = self.p * self._expected._shares
+            self._step = 0.0
+        self._pieces: Dict[float, Any] = {}
+
+    def _demands(self, x) -> np.ndarray:
+        """The demands' cumulative hazard from 0 to each time ``x``."""
+        x = np.asarray(x, dtype=float)
+        if self.times is not None:
+            met = np.searchsorted(self.times, x, side="right")
+            with np.errstate(invalid="ignore"):
+                return np.where(met > 0, met * self._step, 0.0)
+        return self.p * np.maximum(self._expected.operating(x), 0.0)
+
+    def _life(self, name: str, x) -> np.ndarray:
+        x = np.asarray(x, dtype=float)
+        with np.errstate(all="ignore"):
+            out = np.asarray(getattr(self.life, name)(x), dtype=float)
+        return out.reshape(x.shape)
+
+    def Hf(self, x):
+        """The cumulative hazard of a unit new at 0, never repaired."""
+        return self._life("Hf", x) + self._demands(x)
+
+    def sf(self, x):
+        """``R(x) (1 - p)^N(x)`` (or ``R(x) exp(-p Λ(x))``): a unit new at
+        0 is up at ``x``, never repaired."""
+        return self._life("sf", x) * np.exp(-self._demands(x))
+
+    def ff(self, x):
+        return -np.expm1(-self.Hf(x))
+
+    def _piece(self, rate: float):
+        """The life at a constant demand hazard ``rate`` beside it: the
+        life itself at 0, else a ``LifeWithDemands`` of it."""
+        if rate == 0.0:
+            return self.life
+        if rate not in self._pieces:
+            self._pieces[rate] = LifeWithDemands(self.life, rate, 1.0)
+        return self._pieces[rate]
+
+    def life_left(self, t0: float, age: float, u: float) -> float:
+        """The time from ``t0`` to the failure of a unit put into (or back
+        in) service then at virtual age ``age``, from the uniform ``u``:
+        the least ``s`` at which ``G(s)`` (see the class) reaches ``-log
+        u``. Between the knots (the demands, or the plan's times) the
+        demands' hazard grows at a constant rate, so each piece is the
+        draw of the life at that rate beside it at the age reached
+        (``_event_loop._aged_life``), from what is left of ``-log u``; at
+        a demand the hazard steps up by ``-log(1 - p)``."""
+        from ._event_loop import _aged_life
+
+        left = 0.0 - math.log(u) if u > 0.0 else math.inf
+        if not math.isfinite(left):
+            return math.inf
+        k = int(np.searchsorted(self._knots, t0, side="right"))
+        s = 0.0
+        while True:
+            rate = float(self._rates[k])
+            end = (
+                float(self._knots[k]) - t0
+                if k < self._knots.size
+                else math.inf
+            )
+            x = _aged_life(self._piece(rate), age + s, math.exp(-left))
+            if s + x <= end:
+                return s + x
+            # Survived the piece: its life's hazard and its demands' are
+            # spent, and the demand at its end is met.
+            ran = self._life("Hf", np.array([age + s, age + end]))
+            left -= float(ran[1] - ran[0]) + rate * (end - s)
+            left -= self._step
+            s = end
+            if left <= 0.0:
+                return s
+            k += 1
+
+    def time_scale(self) -> float:
+        """A typical failure time: the life's (see
+        ``_model_utils.failure_time_scale``)."""
+        from ._model_utils import failure_time_scale
+
+        return failure_time_scale(self.life)
+
+    def mean(self):
+        raise self._no_reliability("mean life")
+
+    def random(self, size):
+        raise self._no_reliability("draws without a start time")
+
+    def __repr__(self) -> str:
+        when = (
+            f"{self.times.size} demands"
+            if self.times is not None
+            else "a demand plan"
+        )
+        return f"LifeWithPlannedDemands({self.life!r}, p={self.p:g}, {when})"
