@@ -986,6 +986,28 @@ release between minors that only adds (0.19.1).
   model's parameters (its baseline's and its coefficients) as its
   distribution's: `model_parameters` gives None for one, as for any model
   it cannot rebuild, rather than a rebuild that fails.
+- A tested unit with an exponential life, whose tests or repairs take
+  time, fails at its rate while it is up, in a `RepairableRBD`'s long-run
+  values and over time: between two points of its grid, its expected
+  failures follow its exposure (the test's and the repair's CDFs exact at
+  any time), where they were linear across the cell, and the long-run
+  values are averaged at three Gauss points a cell, not two. A system's
+  failures with another unit in the same repairs were off by the cell's
+  width squared. Against the Markov chain of two or three voted channels
+  (undetected failures at 2e-5 an hour, tested every 8,760 h, a repair of
+  24 h on average after the test), the relative differences were:
+  `system_failure_frequency` 5.2e-7 (1oo2), 4.6e-8 (2oo2) and 4.6e-7
+  (2oo3), now 1.1e-9, 2.1e-10 and 1.0e-9; the undetected failures' part
+  1.3e-6, 1.2e-7 and 1.2e-6, now the same 1.1e-9 at most;
+  `mean_unavailability` 1.8e-8, 1.6e-9 and 1.3e-8, now 1.7e-9 at most.
+  Over time, `expected_failures` past the first test was 5.2e-7 off and
+  is now within 1e-9 of the long run, and the unit's own availability in
+  a repair, 2.9e-7 off (1.7e-5 in the cell a test of a fixed time ends
+  in), is within 1e-9. So these values of diagrams with such units move
+  by up to about 1e-6 relative (`SafetyFunction.pfh` and `pfd_avg` among
+  them: the guide's worn 2oo3 `pfh()` reads 7.9104e-06, where it read
+  7.9105e-06); a unit with any other life is worked out as before.
+  Seeded and simulated results do not change.
 
 ## [0.20] - 2026-11-22
 

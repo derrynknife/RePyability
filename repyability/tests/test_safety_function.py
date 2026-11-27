@@ -461,16 +461,14 @@ def test_votes_against_the_chain_of_their_channels(
     pfd, pfh, undetected = dangerous_chain(
         n, k, RATES["du"], RATES["dd"], MTTR, mrt, T1, beta, beta_detected
     )
-    assert function.pfd_avg() == pytest.approx(pfd, rel=1e-6)
     # Without a shared cause and with a repair that takes time after the
-    # test, the frequency is averaged over the tested units' own grids
-    # (two points a cell), which is good to about 1e-6 of it: 1.3e-6 at
-    # most over these cases, against 1e-9 through the groups' chain.
-    on_grids = beta == 0.0 and mrt > 0.0
-    rel = 1e-5 if on_grids else 1e-6
-    assert function.pfh() == pytest.approx(pfh, rel=rel)
+    # test, the values are averaged over the tested units' own grids, each
+    # unit failing at its rate while it is up: 1.3e-9 off at most over
+    # these cases, as through the groups' chain.
+    assert function.pfd_avg() == pytest.approx(pfd, rel=1e-8)
+    assert function.pfh() == pytest.approx(pfh, rel=1e-8)
     assert function.pfh(undetected_only=True) == pytest.approx(
-        undetected, rel=rel
+        undetected, rel=1e-8
     )
     if beta == 0.0:
         assert not function.dangerous.ccf_groups
