@@ -2694,6 +2694,7 @@ def _swapped_tested_curve(rbd, node, horizon: float, start):
     after = _long_run.after_upgrades(rbd)
     old = _requirements._tested_unit(before, node, any_kind=True)
     new = _requirements._tested_unit(after, node, any_kind=True)
+    assert old is not None and new is not None
     head = _tested_unit_curve(before, node, old, at, start)
     rest = max(horizon - at, 0.0)
     # The new unit's tests: on the calendar, the first after ``at``.
@@ -2767,7 +2768,10 @@ def _kept_tested_curve(rbd, node, start):
         r = plain._r(m)
         lag = n[:, None] - m[None, :]
         inside = (lag >= 1) & (lag <= len(fails))
-        b = b + (np.where(inside, fails[np.clip(lag - 1, 0, len(fails) - 1)], 0.0) @ r)
+        b = b + (
+            np.where(inside, fails[np.clip(lag - 1, 0, len(fails) - 1)], 0.0)
+            @ r
+        )
     total = np.concatenate([[0.0], np.cumsum(b)])
 
     def started(x):

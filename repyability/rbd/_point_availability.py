@@ -2797,7 +2797,9 @@ class MixedCurve:
             if time < stop:
                 none = np.zeros(1)
                 parts.append(
-                    Atoms(np.array([time]), none, none, np.array([chance]), none)
+                    Atoms(
+                        np.array([time]), none, none, np.array([chance]), none
+                    )
                 )
         merged = Atoms(*(np.concatenate(c) for c in zip(*parts)))
         order = np.argsort(merged.times, kind="stable")
@@ -2865,9 +2867,7 @@ class SwitchedCurve:
 
     def failed_at(self, x: np.ndarray) -> np.ndarray:
         x = np.asarray(x, dtype=float)
-        return np.clip(
-            self._sum(lambda curve: failed_at(curve, x)), 0.0, 1.0
-        )
+        return np.clip(self._sum(lambda curve: failed_at(curve, x)), 0.0, 1.0)
 
     def events(self, x: np.ndarray) -> Dict[str, np.ndarray]:
         x = np.asarray(x, dtype=float)

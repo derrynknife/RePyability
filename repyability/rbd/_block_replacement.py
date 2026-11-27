@@ -728,7 +728,7 @@ def plan_availability(
     if durations is None:
         durations = [duration] * len(lengths)
     made: dict = {}
-    keys = [
+    keys: list = [
         (length, id(own), id(taken))
         for length, own, taken in zip(lengths, lives, durations)
     ]
@@ -748,7 +748,12 @@ def plan_availability(
         # Its own grid, with the renewals the switch splits.
         old = made[keys[k]]
         grid = _grid(
-            lives[k], repair, durations[k], lengths[k], node, True,
+            lives[k],
+            repair,
+            durations[k],
+            lengths[k],
+            node,
+            True,
             steps=old.steps,
         )
         new = _grid(

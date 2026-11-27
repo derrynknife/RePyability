@@ -569,7 +569,9 @@ def test_a_memoryless_unit_kept_with_its_tests_against_its_closed_form():
         )
 
     t = np.array([10.0, 399.0, 419.0, 421.0, 449.9, 450.1, 499.0, 777.0])
-    np.testing.assert_allclose(rbd.point_availability(t), closed(t), atol=1e-12)
+    np.testing.assert_allclose(
+        rbd.point_availability(t), closed(t), atol=1e-12
+    )
 
 
 @pytest.mark.parametrize(
@@ -596,9 +598,7 @@ def test_a_memoryless_unit_kept_with_its_tests_against_its_closed_form():
         "tests",
     ],
 )
-def test_kept_in_service_with_its_task_the_simulation_agrees(
-    more, at, states
-):
+def test_kept_in_service_with_its_task_the_simulation_agrees(more, at, states):
     more = dict(more)
     repair = more.pop("repairability", None)
     rbd = one(
@@ -642,7 +642,11 @@ MISSING = {**TESTS, "coverage": 0.5, "full_test": 200.0}
         (LIFE, NEW, "instant", MISSING, 400.0, (None,)),
         (E([1 / 200.0]), E([1 / 800.0]), "instant", MISSING, 400.0, (None,)),
     ],
-    ids=["tests and repairs of fixed lengths", "tests that miss", "memoryless"],
+    ids=[
+        "tests and repairs of fixed lengths",
+        "tests that miss",
+        "memoryless",
+    ],
 )
 def test_tested_and_replaced_the_simulation_agrees(
     life, new, repair, tests, at, states
@@ -681,13 +685,14 @@ def test_a_memoryless_unit_replaced_with_tests_that_miss_is_a_new_one():
     fresh = one(E([1 / 800.0]), "instant", inspection=MISSING)
     t = np.array([401.0, 449.0, 451.0, 600.0, 777.0, 999.0])
     np.testing.assert_allclose(
-        rbd.point_availability(t), fresh.point_availability(t - 400.0),
+        rbd.point_availability(t),
+        fresh.point_availability(t - 400.0),
         atol=1e-12,
     )
     assert rbd.mission_availability(1000.0) * 1000.0 == pytest.approx(
-        one(E([1 / 200.0]), "instant", inspection=MISSING).mission_availability(
-            400.0
-        )
+        one(
+            E([1 / 200.0]), "instant", inspection=MISSING
+        ).mission_availability(400.0)
         * 400.0
         + fresh.mission_availability(600.0) * 600.0,
         rel=1e-8,  # the integrals' tolerance (_quadrature.TOLERANCE)
