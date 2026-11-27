@@ -171,6 +171,13 @@ def _node_long_run(rbd, node) -> Tuple[str, str]:
         )
         if message:
             return r.REFUSED, message
+        if rbd._standby[node].dormancy_factor != 0.0:
+            return (
+                r.NUMERICAL,
+                "the Markov renewal process of a warm standby pair with "
+                "one repair at a time, on a grid of its operating unit's "
+                "used life",
+            )
         if _standby_crews(rbd) == 1:
             return (
                 r.NUMERICAL,
@@ -1291,10 +1298,28 @@ def _standby_cycle_blocker(
     from repyability.rbd import _standby_cycle
     from repyability.rbd._covariate_schedule import ClockLife
 
-    reason = _standby_cycle.why_not(rbd._standby[node])
+    arrangement = rbd._standby[node]
+    reason = _standby_cycle.why_not(arrangement)
     component = rbd.components[node]
+    warm = reason is None and arrangement.dormancy_factor != 0.0
+    if warm and over_time:
+        reason = "its spare ages while it waits (a warm spare)"
+    elif warm and _standby_crews(rbd) != 1:
+        reason = (
+            "its spare ages while it waits (a warm spare) and both units "
+            "can be repaired at once (a warm pair's long-run values need "
+            "one repair at a time, repair_crews=1)"
+        )
+    elif warm and arrangement.switching_probability != 1.0:
+        reason = (
+            "its spare ages while it waits (a warm spare) and switching "
+            "onto it may fail (a warm pair's long-run values need a sure "
+            "switch)"
+        )
     if reason is None and any(
-        isinstance(m, ClockLife) or not callable(getattr(m, "df", None))
+        isinstance(m, ClockLife)
+        or not callable(getattr(m, "df", None))
+        or (warm and not callable(getattr(m, "qf", None)))
         for m in (component.reliability, component.time_to_replace)
     ):
         reason = "its life or repair is not a distribution of times"
@@ -1326,9 +1351,10 @@ def _standby_cycle_blocker(
     return (
         f"Component {node!r} is {rbd._standby[node].what}, whose exact "
         "long-run values come from a Markov chain of its units, which "
-        "needs their lives and repair times exponential, or (a cold "
-        "standby pair, one needed) from its cycle; "
-        f"{reason}: simulate it with availability() or cost()."
+        "needs their lives and repair times exponential, or (a standby "
+        "pair, one needed: cold, or warm with one repair at a time and a "
+        f"sure switch) from its cycle; {reason}: simulate it with "
+        "availability() or cost()."
     )
 
 
@@ -1369,17 +1395,25 @@ def _standby_long_run(rbd, node) -> "_standby_chain.StandbyLongRun":
     exponential, for a cold standby pair, from its cycle with one repair
     at a time (``_standby_cycle``) and from the Markov renewal process
     on the other unit's elapsed repair with both repaired at once
-    (``_standby_both``). The crews do not tie it to other
+    (``_standby_both``), and for a warm pair with one repair at a time
+    from the one on its operating unit's used life
+    (``_standby_warm``). The crews do not tie it to other
     nodes here (see ``_crews_couple``): its units' repairs wait only for
     each other, with ``repair_crews`` crews when they are the crews' only
     jobs."""
-    from repyability.rbd import _standby_both, _standby_cycle
+    from repyability.rbd import _standby_both, _standby_cycle, _standby_warm
 
     try:
         life, repair = _standby_rates(rbd, node)
     except NotImplementedError:
         _require_standby_long_run(rbd, node)
         component = rbd.components[node]
+        if rbd._standby[node].dormancy_factor != 0.0:
+            return _standby_warm.long_run(
+                component.reliability,
+                component.time_to_replace,
+                rbd._standby[node].dormancy_factor,
+            )
         pair = _standby_cycle if _standby_crews(rbd) == 1 else _standby_both
         return pair.long_run(
             component.reliability,

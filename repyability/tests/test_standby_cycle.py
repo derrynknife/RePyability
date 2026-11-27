@@ -95,8 +95,8 @@ def test_a_wear_out_pair_against_the_simulation():
     "words, rbd",
     [
         (
-            "warm spare",
-            pair(W([1000.0, 2.5]), E([0.01]), dormancy_factor=0.5),
+            "3 units",
+            pair(W([1000.0, 2.5]), E([0.01]), units=3),
         ),
     ],
 )

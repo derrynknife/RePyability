@@ -335,6 +335,11 @@ minimum surpyval is in `pyproject.toml` (0.29 as of 0.20).
   change to the group's rules goes into both: `test_standby_cycle.py`,
   `test_standby_window.py` and `test_standby_both.py` check them against
   the chain of exponential units, closed forms and the simulation.
+  A warm pair (a spare ageing at `dormancy_factor`, failing in standby,
+  switched in with the life it has used) with one repair at a time is a
+  Markov renewal process on the operating unit's used life each time a
+  repair starts (`_standby_warm.py`, the long run alone, a sure switch):
+  `test_standby_warm.py` checks it the same way.
 - **A `MarkovComponent` (`repyability/rbd/markov_node.py`) rides the
   standby groups' rails in a `RepairableRBD`**: it is in `rbd._standby`
   as `_events.MARKOV` (key `"markov"`, one unit), so whatever handles or

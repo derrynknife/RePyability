@@ -1157,8 +1157,20 @@ the pair is up 0.9910.)
   same pair with a switch that works nine times in ten is up 0.96204 of
   the time with one crew (400 runs of 1,000,000 h: 0.96209, +0.3 standard
   errors) and 0.96494 with a crew each (0.96522, +1.8).
-  Warm spares, more units, and over time a switch that can fail or both
-  units repaired at once are simulated, for now.
+  A warm spare (`"dormancy_factor"` above 0: it ages at that share of an
+  operating unit's rate while it waits, and can fail in standby) is in
+  the long-run values with one repair at a time and a sure switch. Each
+  time a unit starts its repair, what follows depends only on how much
+  of its life the operating unit has used, so the pair is a Markov
+  renewal process on that, solved on a grid halved until two solutions
+  agree to 1e-9. The pair above with a spare ageing at half the rate is
+  up 0.95318 of the time (400 runs of 1,000,000 h: 0.95300, -1.0
+  standard errors), against 0.98830 cold and 0.92219 hot. Lives whose
+  hazard falls steeply from 0 (a Weibull shape below 1) settle slowly,
+  and may warn with how nearly they did.
+  More units, a warm pair with both units repaired at once or a switch
+  that can fail, and over time a warm spare, a switch that can fail or
+  both units repaired at once are simulated, for now.
 - **Simulation.** `availability`, `cost` and `compare` simulate groups
   whatever their units' models, in Python.
 
