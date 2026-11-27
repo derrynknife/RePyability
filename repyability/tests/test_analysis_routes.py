@@ -552,6 +552,10 @@ NETWORK_CALLS = {
     "mean_availability": lambda net: net.mean_availability(),
     "mean_unavailability": lambda net: net.mean_unavailability(),
     "system_failure_frequency": lambda net: net.system_failure_frequency(),
+    # Simulated, and the first loss.
+    "availability": lambda net: net.availability(X, mc_samples=200, seed=1),
+    "first_failure_sf": lambda net: net.first_failure_sf(X),
+    "mean_time_to_first_failure": lambda net: net.mean_time_to_first_failure(),
     # With link capacities: at a time (in the long run, repaired), and
     # over time.
     "capacity_distribution": lambda net: net.capacity_distribution(
