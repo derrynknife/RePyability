@@ -900,6 +900,10 @@ CALLS = {
         for name in (
             "sf",
             "ff",
+            "Hf",
+            "df",
+            "hf",
+            "parameter_sensitivity",
             "birnbaum_importance",
             "improvement_potential",
             "risk_achievement_worth",
@@ -928,6 +932,14 @@ CALLS = {
     "mean_uncertainty": lambda net: net.mean_uncertainty(
         {"a": [W([90, 2])]}, n_draws=2, seed=1
     ),
+    "bx_life_uncertainty": lambda net: net.bx_life_uncertainty(
+        10, {"a": [W([90, 2])]}, n_draws=2, seed=1
+    ),
+    "time_to_reliability_uncertainty": (
+        lambda net: net.time_to_reliability_uncertainty(
+            0.5, {"a": [W([90, 2])]}, n_draws=2, seed=1
+        )
+    ),
 }
 
 
@@ -944,8 +956,10 @@ def test_the_routes_say_how_each_analysis_is_worked_out(monkeypatch):
         "analysis_routes",
         "from_dict",
         "from_json",
+        "levers",
         "to_dict",
         "to_json",
+        "with_levers",
     }
     assert report["sf"].route == report["fussell_vesely"].route == "exact"
     assert report["joint_importance"].route == "exact"

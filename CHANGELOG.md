@@ -12,6 +12,17 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- `df`, `hf`, `Hf`, `parameter_sensitivity`, `levers` and `with_levers` on
+  `Network`, as `NonRepairableRBD` and `FaultTree` have them. `Hf` is exact
+  from the reliability and unreliability; `df` and `hf` differ the exact
+  reliability with a step relative to the time (and, at 0, to the
+  elements' typical life), so no unit of time matters; `parameter_sensitivity`
+  is each element's Birnbaum importance times how far its model's
+  reliability moves with a parameter, and `levers` and `with_levers` list
+  and move those parameters, each with the range its model accepts.
+  `analysis_routes()` and the capability matrix show them.
+
+
 - `EventTree(initiator, headings, sequences=None)`: an event tree. The
   initiator is a frequency, or a `FaultTree` of repaired events whose
   `system_failure_frequency()` it is; each heading a `FaultTree` (its top

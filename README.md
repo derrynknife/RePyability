@@ -169,7 +169,7 @@ Which analyses each model type has (the method; — where it has none):
 | **Reliability and lifetime** | | | | | | |
 | Reliability R(t) | `sf` | — | `sf` | `sf` | `sf` | — |
 | Unreliability F(t) | `ff` | — | `ff` | `ff` | `ff` | — |
-| Density, hazard, cumulative hazard | `df` | — | `df` | — | — | — |
+| Density, hazard, cumulative hazard | `df` | — | `df` | `df` | — | — |
 | Mean time to (first) failure | `mean` | — | `mean` | `mean` | — | — |
 | Each node's own R(t), F(t) and MTTF | `node_sf` | — | — | — | — | — |
 | B-life, time to a reliability | `bx_life` | — | `bx_life` | `bx_life` | — | — |
@@ -258,7 +258,7 @@ Which analyses each model type has (the method; — where it has none):
 | Every measure in one call | `importances` | `importances` | `importances` | `importances` | `importances` | — |
 | All measures given a state | `importances_given_state` | — | — | — | — | — |
 | Top event given each event | — | — | `conditional_probabilities` | — | — | — |
-| Parameter sensitivity, levers | `parameter_sensitivity` | `parameter_sensitivity` | `parameter_sensitivity` | — | — | — |
+| Parameter sensitivity, levers | `parameter_sensitivity` | `parameter_sensitivity` | `parameter_sensitivity` | `parameter_sensitivity` | — | — |
 | Tornado data (each lever at its low and high) | `tornado` | `tornado` | `tornado` | — | — | — |
 | **Uncertainty** | | | | | | |
 | Of the reliability or availability | `sf_uncertainty` | `mean_availability_uncertainty` | `sf_uncertainty` | `sf_uncertainty` | `reliability_interval` | — |

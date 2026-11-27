@@ -393,6 +393,9 @@ ownership (`discount_rate=`, see [Costs](costs.md#discounting)).
 | `barlow_proschan_importance` | whole life, or by `x` | long run, `window`, `state` | whole life, or by `t` |
 | `uncertainty_importance` | at `x`; `of=` the MTTF, a B-life, a time to a reliability | long run; `of=` the availability at `x` or over missions `x`, from new or `state`, or the cost rate | |
 
+A `Network` has `parameter_sensitivity(x)`, `levers` and `with_levers` over
+the parameters of its links' and nodes' models, at `x`, as a diagram has them.
+
 With limited repair crews or common-cause groups, the measures follow the
 crews' and the groups' Markov chains: theta and the Barlow–Proschan shares
 split the chains' transitions by the component, or common cause, that makes
