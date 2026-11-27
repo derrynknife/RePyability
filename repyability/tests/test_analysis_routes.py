@@ -32,7 +32,6 @@ from repyability import (
 )
 from repyability.rbd import _repairable_uncertainty, phased_mission, routes
 from repyability.rbd._model_utils import parametric_spec
-from repyability.rbd._phase_type import NotSettled
 from repyability.tests.catalogue import (
     EDGES,
     E,
@@ -285,8 +284,8 @@ REPAIRABLE_CALLS = {
     "spares_allocation": lambda rbd: rbd.spares_allocation(
         {"north": 3, "south": 2}, echelon_parts(rbd), budget=6.0
     ),
-    "first_failure_sf": lambda rbd: settled(
-        lambda: rbd.first_failure_sf([10.0, 200.0], rtol=1e-2)
+    "first_failure_sf": (
+        lambda rbd: rbd.first_failure_sf([10.0, 200.0], rtol=1e-2)
     ),
     "first_failure_bounds": (
         lambda rbd: rbd.first_failure_bounds([10.0, 200.0])
@@ -294,8 +293,8 @@ REPAIRABLE_CALLS = {
     "mean_time_to_first_failure_bound": (
         lambda rbd: rbd.mean_time_to_first_failure_bound()
     ),
-    "mean_time_to_first_failure": lambda rbd: settled(
-        lambda: rbd.mean_time_to_first_failure(rtol=1e-2)
+    "mean_time_to_first_failure": (
+        lambda rbd: rbd.mean_time_to_first_failure(rtol=1e-2)
     ),
     "point_availability": lambda rbd: rbd.point_availability([10.0, 200.0]),
     "point_unavailability": (
@@ -429,17 +428,6 @@ for calls in (NONREPAIRABLE_CALLS, REPAIRABLE_CALLS):
     )
 
 
-def settled(call):
-    """``call()``, or None where lives and repairs followed as phases do
-    not settle to the accuracy asked for within the chain's size: the
-    route is numerical, and says that this is refused when the values
-    are asked for (it depends on the times and on ``rtol``)."""
-    try:
-        return call()
-    except NotSettled:
-        return None
-
-
 def behaves_as_reported(route: AnalysisRoute, call) -> None:
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -448,7 +436,13 @@ def behaves_as_reported(route: AnalysisRoute, call) -> None:
                 call()
             assert str(error.value) == route.reason
         else:
-            identical(call(), call())
+            try:
+                first = call()
+            except NotImplementedError as error:
+                # Only a route that says when it may refuse does.
+                assert route.may_refuse, f"{route} refused: {error}"
+                return
+            identical(first, call())
 
 
 @pytest.mark.parametrize("name", sorted(nonrepairable_kinds()))

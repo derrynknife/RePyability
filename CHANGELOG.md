@@ -12,6 +12,12 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- `AnalysisRoute.may_refuse`: for a route that is not refused but whose
+  call can still refuse depending on what is asked, when it does and
+  what to use instead (`analysis_routes()` prints it as "numerical (may
+  refuse)"). The first failure's routes by a chain, and by phases (whose
+  values may not settle to `rtol`), say so.
+
 - A `Network` of repaired elements may now mix them with fixed
   probabilities and lives that are not repaired, which it refused before
   (as a `FaultTree` does): a probability is down with it at every time
@@ -1101,6 +1107,19 @@ release between minors that only adds (0.19.1).
   in the same order to give the same results as the built-in engines.
 
 ### Fixed
+
+- `first_failure_sf` and `mean_time_to_first_failure` with lives or
+  repairs followed as phases refused small redundant diagrams the guide
+  works out (`NotSettled`): the pair of Weibull lives and lognormal
+  repairs in the guide, at 300, 1000 and 2000 hours, needed a grid finer
+  than its steps were allowed to follow to 2000 hours. Each time is now
+  taken to finer grids only until its own value settles, with the chain
+  followed only to the times still unsettled (a short time settles on
+  finer grids than a long one, and those are cheap), and the work a chain
+  may take is 1e10 steps-times-transitions, up from 3e9. The guide's pair
+  now gives 0.99927, 0.98477 and 0.95649 in about ten seconds. A time
+  asked beside others now gets the value it gets asked alone, which can
+  move a value that settled before by less than `rtol`.
 
 - A surpyval model with a hazard ratio (`hr=`) draws its lifetimes with
   it in a `NonRepairableRBD`'s and a `PhasedMission`'s simulations
