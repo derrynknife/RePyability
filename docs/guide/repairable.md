@@ -1203,7 +1203,7 @@ the pair is up 0.9910.)
   errors) and 0.96494 with a crew each (0.96522, +1.8).
   A warm spare (`"dormancy_factor"` above 0: it ages at that share of an
   operating unit's rate while it waits, and can fail in standby) is in
-  the long-run values with one repair at a time and a sure switch. Each
+  the long-run values with one repair at a time. Each
   time a unit starts its repair, what follows depends only on how much
   of its life the operating unit has used, so the pair is a Markov
   renewal process on that, solved on a grid halved until two solutions
@@ -1212,6 +1212,12 @@ the pair is up 0.9910.)
   standard errors), against 0.98830 cold and 0.92219 hot. Lives whose
   hazard falls steeply from 0 (a Weibull shape below 1) settle slowly,
   and may warn with how nearly they did.
+  Its switch can fail too: the spare then goes on ageing while the
+  failed unit is repaired, so the pair is also followed on how much of
+  its life a waiting spare has used when a unit starts to operate. With
+  a switch that works nine times in ten the same pair is up 0.92583 of
+  the time, and 0.90116 with one that works eight times in ten (400 runs
+  of 1,000,000 h: 0.90089, -1.1 standard errors).
   Over time, with one repair at a time, a switch that can fail is
   followed too: the pair then starts afresh in two states (the other unit
   starting its repair, or ready), whose renewal equations are solved
