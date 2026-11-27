@@ -38,6 +38,20 @@ release between minors that only adds (0.19.1).
   failing switch takes some 3 to 15 s where the sure one takes about
   one (more for a switch that never works).
 
+- An upgraded component with tests no longer refuses its values over a
+  horizon (`point_availability`, `mission_availability`,
+  `expected_events`, `expected_cost`, `expected_npv`) when its tests or
+  repairs are of varying length, nor when the unit in service is kept
+  (`"replace_in_service": False`) with tests or repairs that take time
+  or tests that miss failures. Replaced at the upgrade, a unit off line
+  for its test or in a repair is replaced once what is left of it is
+  over, as a distribution. Kept, each unit has the life in service when
+  its repair puts it in: the component's own values, less the line of
+  the first units put in from the upgrade with the old life, plus the
+  same with the new; upgraded to its own life, it is the component to
+  1e-12. Only tests on a calendar of their own are still simulated. No
+  seeded result changes.
+
 - A `MarkovComponent` with a capacity in each state is simulated:
   `availability()` (and `cost()`), which refused such a diagram, follow
   the state it is in, at that state's level (the capacity's time at

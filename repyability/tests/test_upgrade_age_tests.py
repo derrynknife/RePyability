@@ -26,6 +26,7 @@ from repyability.rbd.serialisation import rbd_from_dict, rbd_to_dict
 E = surv.Exponential.from_params
 W = surv.Weibull.from_params
 FIXED = surv.ExactEventTime.from_params
+LN = surv.LogNormal.from_params
 EDGES = [("s", "a"), ("a", "t")]
 LIFE = W([300, 2.0])
 NEW = W([900, 2.0])
@@ -442,7 +443,7 @@ def test_a_unit_kept_in_service_is_worked_out_over_a_horizon(more):
         assert report[name].route == routes.NUMERICAL
 
 
-def test_a_unit_kept_in_service_with_tests_that_take_time_is_simulated():
+def test_a_unit_kept_in_service_with_tests_that_take_time_is_worked_out():
     rbd = one(
         repair="instant",
         inspection={**TESTS, "duration": FIXED([1.0])},
@@ -450,15 +451,10 @@ def test_a_unit_kept_in_service_with_tests_that_take_time_is_simulated():
     )
     report = rbd.analysis_routes()
     for name in ("point_availability", "expected_cost", "expected_npv"):
-        assert report[name].route == routes.REFUSED
-        assert "replace_in_service False" in report[name].reason
+        assert report[name].route == routes.NUMERICAL
     for name in ("availability", "cost"):
         assert report[name].route == routes.SIMULATED
-    with pytest.raises(NotImplementedError) as error:
-        rbd.point_availability(np.array([500.0]))
-    assert "estimate them by simulation, with availability()" in str(
-        error.value
-    )
+    assert math.isfinite(rbd.mission_availability(600.0))
     rbd.availability(600.0, mc_samples=20, seed=1)
 
 
@@ -699,21 +695,160 @@ def test_a_memoryless_unit_replaced_with_tests_that_miss_is_a_new_one():
     )
 
 
-def test_tests_of_varying_length_are_simulated():
+def test_tests_of_varying_length_are_worked_out():
     rbd = one(
-        inspection={**TESTS, "duration": E([1.0])},
+        inspection={**TESTS, "duration": LN([1.5, 0.3])},
         upgrade=upgrade(),
     )
     route = rbd.analysis_routes()["point_availability"]
-    assert route.route == routes.REFUSED
-    assert "fixed lengths" in route.reason
-    with pytest.raises(NotImplementedError) as error:
-        rbd.mission_availability(1000.0)
-    assert str(error.value).endswith(
-        "estimate them by simulation, with availability() or cost() (or "
-        "npv_distribution())."
-    )
+    assert route.route == routes.NUMERICAL
+    assert math.isfinite(rbd.mission_availability(1000.0))
     rbd.availability(1000.0, mc_samples=20, seed=1)
+
+
+# -- tests or repairs of varying length, and kept with timed tests -------
+
+TIMED_TEST = LN([1.5, 0.3])  # mean 4.7, over by 37 but for 1e-12
+TIMED_REPAIR = LN([2.0, 0.5])  # mean 8.4
+STATES = (
+    None,
+    {"a": NodeState(age=100.0, since_scheduled=30.0)},
+    {"a": NodeState(alive=False, down_for=2.0)},
+)
+
+
+@pytest.mark.parametrize(
+    "repair, tests",
+    [
+        (FIXED([7.0]), {**TESTS, "duration": FIXED([5.0])}),
+        (TIMED_REPAIR, {**TESTS, "duration": FIXED([5.0])}),
+        (FIXED([7.0]), {**TESTS, "duration": TIMED_TEST}),
+        (TIMED_REPAIR, {**TESTS, "duration": TIMED_TEST}),
+        ("instant", MISSING),
+    ],
+    ids=["fixed", "repair varies", "test varies", "both vary", "tests miss"],
+)
+def test_kept_with_timed_tests_its_own_life_is_the_component(repair, tests):
+    # The component's own curve, less the curve from the first units put
+    # in from the upgrade with the old life, plus the same with the new:
+    # to the same life, the two cancel to rounding.
+    kept = one(
+        repair=repair,
+        inspection=tests,
+        upgrade=upgrade(402.0, LIFE, replace_in_service=False),
+    )
+    alone = one(repair=repair, inspection=tests)
+    t = np.concatenate([np.linspace(0.0, 1000.0, 401), [402.0, 403.0]])
+    states = STATES if "coverage" not in tests else (None,)
+    for state in states:
+        np.testing.assert_allclose(
+            kept.point_availability(t, state=state),
+            alone.point_availability(t, state=state),
+            rtol=0.0,
+            atol=1e-12,
+        )
+        mine = kept.expected_events(1000.0, state=state)
+        theirs = alone.expected_events(1000.0, state=state)
+        for name in ("node_failures", "node_preventive", "node_corrective"):
+            assert getattr(mine, name)["a"] == pytest.approx(
+                getattr(theirs, name)["a"], rel=1e-12, abs=1e-12
+            )
+        assert kept.expected_cost(1000.0, state=state).mean == pytest.approx(
+            alone.expected_cost(1000.0, state=state).mean, rel=1e-12
+        )
+
+
+def kept_repaired_chain(x, lam, new, at, R, T):
+    """A memoryless unit kept at its upgrade, tested every ``T`` in no
+    time (finding every failure) and repaired in ``R < T``: at each test
+    it is working with the old life, the new one, or found failed, and
+    the unit put in ``R`` later has the life in service then. ``x`` at
+    most ``n T`` for the tests' count ``n``: its point availability."""
+    x = np.asarray(x, dtype=float)
+    out = np.empty_like(x)
+    old, fresh, failed = 1.0, 0.0, 0.0
+    for n in range(int(np.ceil(x.max() / T)) + 1):
+        lo = n * T
+        rate = new if lo + R >= at else lam
+        s = x - lo
+        inside = (s >= 0.0) & (s < T)
+        back = np.where(s >= R, np.exp(-rate * np.maximum(s - R, 0.0)), 0.0)
+        out[inside] = (
+            old * np.exp(-lam * s[inside])
+            + fresh * np.exp(-new * s[inside])
+            + failed * back[inside]
+        )
+        # At the next test.
+        kept_old = old * math.exp(-lam * T)
+        kept_new = fresh * math.exp(-new * T)
+        renewed = failed * math.exp(-rate * (T - R))
+        if rate == new:
+            kept_new += renewed
+        else:
+            kept_old += renewed
+        old, fresh = kept_old, kept_new
+        failed = 1.0 - old - fresh
+    return out
+
+
+def test_a_memoryless_unit_kept_with_repairs_in_time_against_its_chain():
+    # Upgraded at 402: the failure found at 350 is back at 357 with the
+    # old life, the one found at 400 at 407 with the new. On the grid
+    # (h = T / 2000) the walk's restarts fall on its points, and a
+    # memoryless life's survival split between two points errs by at most
+    # (lambda h)^2 / 8 = 2e-9 of a restart's chance: 1e-8 over the
+    # horizon's few restarts.
+    lam, new, at, R = 1 / 200.0, 1 / 800.0, 402.0, 7.0
+    rbd = one(
+        E([lam]),
+        FIXED([R]),
+        inspection=TESTS,
+        upgrade=upgrade(at, E([new]), replace_in_service=False),
+    )
+    t = np.array([10.0, 356.0, 358.0, 401.0, 406.0, 408.0, 451.0, 999.0])
+    np.testing.assert_allclose(
+        rbd.point_availability(t),
+        kept_repaired_chain(t, lam, new, at, R, 50.0),
+        rtol=0.0,
+        atol=1e-8,
+    )
+
+
+@pytest.mark.parametrize(
+    "repair, tests, kept, states",
+    [
+        (TIMED_REPAIR, {**TESTS, "duration": TIMED_TEST}, False, STATES),
+        (FIXED([7.0]), {**TESTS, "duration": TIMED_TEST}, False, STATES),
+        (TIMED_REPAIR, {**TESTS, "duration": TIMED_TEST}, True, STATES),
+        (FIXED([7.0]), {**TESTS, "duration": FIXED([5.0])}, True, STATES),
+        ("instant", MISSING, True, (None,)),
+    ],
+    ids=[
+        "replaced, both vary",
+        "replaced, the test varies",
+        "kept, both vary",
+        "kept, fixed lengths",
+        "kept, tests that miss",
+    ],
+)
+def test_varying_or_kept_the_simulation_agrees(repair, tests, kept, states):
+    # Upgraded at 402, in the test from 400.
+    rbd = one(
+        LIFE,
+        repair,
+        inspection=tests,
+        upgrade=upgrade(402.0, NEW, cost=50.0, replace_in_service=not kept),
+    )
+    T = 1000.0
+    for seed, state in enumerate(states, start=1):
+        run = plain_run(rbd, T, seed, state)
+        interval = run.mean_availability_interval()
+        exact = rbd.mission_availability(T, state=state)
+        assert abs(interval.estimate - exact) <= Z * interval.standard_error
+        cost = rbd.expected_cost(T, state=state)
+        assert abs(run.cost.sample_mean - cost.mean) <= (
+            Z * run.cost.sample_se
+        )
 
 
 # -- refusals and the spec ----------------------------------------------------

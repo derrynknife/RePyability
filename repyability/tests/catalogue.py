@@ -1003,6 +1003,38 @@ def repairable_kinds():
                     repair_cost=5.0,
                 ),
             ),
+            # Tests and repairs of varying length: replaced once what is
+            # left of the test or repair under way at the upgrade is over.
+            "upgraded at a time, tests of varying length": system(
+                unit(
+                    repairability=surv.LogNormal.from_params([1.5, 0.5]),
+                    inspection={
+                        "interval": 100.0,
+                        "cost": 1.0,
+                        "duration": surv.LogNormal.from_params([0.5, 0.3]),
+                    },
+                    upgrade={"at": 250.0, "reliability": W([900, 2.0])},
+                    repair_cost=5.0,
+                ),
+            ),
+            # Kept with tests that take time: each unit with the life in
+            # service when its repair puts it in.
+            "upgraded at a time, tests that take time, the unit kept": system(
+                unit(
+                    repairability=surv.ExactEventTime.from_params([5.0]),
+                    inspection={
+                        "interval": 100.0,
+                        "cost": 1.0,
+                        "duration": surv.ExactEventTime.from_params([2.0]),
+                    },
+                    upgrade={
+                        "at": 250.0,
+                        "reliability": W([900, 2.0]),
+                        "replace_in_service": False,
+                    },
+                    repair_cost=5.0,
+                ),
+            ),
             "block replacement, in no time": system(
                 unit(
                     repairability="instant",
