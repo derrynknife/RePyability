@@ -126,7 +126,7 @@ def _unsupported_level(
     from repyability.non_repairable import NonRepairable
     from repyability.rbd.repairable_rbd import RepairableRBD
 
-    from . import _crews, _duty, _shelves
+    from . import _crews, _demands, _duty, _shelves
     from ._covariate_schedule import scheduled
 
     if _shelves.of(rbd) is not None:
@@ -211,6 +211,8 @@ def _unsupported_level(
             # A life on the diagram's clock (the Python loop's
             # _ScheduledComponent): numba's loop takes a duty plan's that
             # draws its lives in operating time (see _kernel._operating).
+            if isinstance(clocked, _demands.DemandTimesLife):
+                return f"the demand times of node {name!r}"
             what = (
                 "covariate schedule"
                 if clocked.lead.endswith("covariate schedule")

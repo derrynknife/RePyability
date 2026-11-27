@@ -12,6 +12,26 @@ release between minors that only adds (0.19.1).
 
 ### Added
 
+- Demand plans for a probability of failing per demand in a
+  `RepairableRBD` (a `"reliability"` that is a
+  `surpyval.FixedEventProbability`), beside `"demand_rate"`:
+  `"demand_times"`, the set times the unit is called on (a recurrence
+  rule's through `CalendarContext.rule_times`), a life that ends only at
+  one of them and is not restarted by a repair; its values over a window
+  (`point_availability`, `mission_availability`, `expected_failures`,
+  `expected_cost`) are exact, a sum over the demands, its long run is
+  refused, and the Python engine simulates it, drawing the demands a unit
+  survives from its own failure stream. `"demand_plan"`, the demands per
+  unit of time from each of its times (`{"times", "rates"}` or a
+  `schedule.DutySchedule`): an exponential life in demands on the plan's
+  clock, as a duty plan that changes over time, worked out over a window
+  where its repairs take no time and simulated otherwise. A duty with a
+  demand plan or rate is refused unless `"demand_basis": "operating"`
+  says it is counted in operating time, which the duty then puts on the
+  calendar (a demand rate with a duty was refused before). `UnitPlan`
+  takes `demand_times`, `demand_plan` and `demand_basis`; they are saved,
+  and the probability is the lever. Seeded results of every other node
+  are unchanged.
 - `df`, `hf`, `Hf`, `parameter_sensitivity`, `levers` and `with_levers` on
   `Network`, as `NonRepairableRBD` and `FaultTree` have them. `Hf` is exact
   from the reliability and unreliability; `df` and `hf` differ the exact
@@ -21,8 +41,6 @@ release between minors that only adds (0.19.1).
   reliability moves with a parameter, and `levers` and `with_levers` list
   and move those parameters, each with the range its model accepts.
   `analysis_routes()` and the capability matrix show them.
-
-
 - `EventTree(initiator, headings, sequences=None)`: an event tree. The
   initiator is a frequency, or a `FaultTree` of repaired events whose
   `system_failure_frequency()` it is; each heading a `FaultTree` (its top

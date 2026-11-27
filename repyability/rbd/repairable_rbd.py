@@ -425,7 +425,15 @@ class RepairableRBD(RBD):
           levers are the probability and the rate; a probability of 0
           makes it a junction. A life that wears out cannot take one:
           draw the demand mode as a component of its own, in series
-          (see the guide's "Failing on demand").
+          (see the guide's "Failing on demand"). In its place,
+          ``"demand_times"`` calls the unit on at set times (its life
+          ends only at one; exact over a window, simulated, the long
+          run refused), and ``"demand_plan"`` at a rate that changes
+          (``{"times": [...], "rates": [...]}``: an exponential life in
+          demands on the plan's clock, as a duty plan that changes).
+          A demand plan is on the diagram's clock, and a ``"duty"`` is
+          refused with it unless ``"demand_basis"`` is
+          ``"operating"``: then the duty puts it on the calendar.
           ``"covariates"``, a surpyval ``StepSchedule``, runs a block
           whose ``"reliability"`` is a fitted surpyval regression model
           (proportional or additive hazards, accelerated failure time or

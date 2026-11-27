@@ -1307,6 +1307,12 @@ def test_the_readme_says_what_is_simulated():
             (repairable["demand"], "availability", "simulated"),
             (repairable["fixed probability"], "mean_availability", "refused"),
             (repairable["fixed probability"], "availability", "simulated"),
+            (repairable["demand times"], "point_availability", "numerical"),
+            (repairable["demand times"], "mission_availability", "numerical"),
+            (repairable["demand times"], "mean_availability", "refused"),
+            (repairable["demand times"], "availability", "simulated"),
+            (repairable["demand plan"], "point_availability", "refused"),
+            (repairable["demand plan"], "availability", "simulated"),
         ],
         "Spares with repair crews, standby groups, opportunistic "
         "maintenance, imperfect repair or partial restoration": [
