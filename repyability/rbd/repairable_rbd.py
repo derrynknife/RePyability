@@ -431,7 +431,10 @@ class RepairableRBD(RBD):
           mode as ``"demand"``, a dict of the ``"probability"`` and the
           demands' ``"rate"``: the two compete and are renewed together,
           the unit's hazard the life's plus the rate times the
-          probability (see the guide's "Failing on demand"). In its place,
+          probability (see the guide's "Failing on demand"); in place of
+          the rate, its set ``"times"`` or a ``"plan"`` of rates, which
+          stay on the calendar, so only the simulations take it. In its
+          place,
           ``"demand_times"`` calls the unit on at set times (its life
           ends only at one; exact over a window, simulated, the long
           run refused), and ``"demand_plan"`` at a rate that changes

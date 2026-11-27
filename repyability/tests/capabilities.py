@@ -531,6 +531,11 @@ NODES: Dict[str, List[Tuple[str, str]]] = {
         ("A probability per demand, at set times", "demand times"),
         ("A probability per demand, on a demand plan", "demand plan"),
         ("A life with a demand mode beside it", "life with a demand mode"),
+        (
+            "A life with demands at set times beside it",
+            "life with demands at set times",
+        ),
+        ("A life with a demand plan beside it", "life with a demand plan"),
         ("A mixture life", "mixture life"),
         ("A fitted degradation process life", "degradation process life"),
         ("Operated part of the time (duty)", "operated part of the time"),

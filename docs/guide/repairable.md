@@ -313,10 +313,25 @@ and listed by `levers()` as `demand.probability` (in `[0, 1]`) and
 demands are on the diagram's clock: a `"duty"` moves the life alone,
 unless `"demand_basis": "operating"` counts the demands in its operating
 time, which the duty then moves too (a duty plan that changes over time
-needs that). Demands at set times or on a plan beside a life, and a
-demand mode on a group of units, are not modelled: draw them as two
-components in series, one with the life and one with the probability and
-its demands. A spare that may fail to
+needs that).
+
+In place of the `"rate"`, the demands beside a life may come at set
+`"times"` (`"demand": {"probability": p, "times": [...]}`) or on a
+`"plan"` of rates that changes (`{"times": [...], "rates": [...]}`, as a
+`"demand_plan"`). They still compete with the life and are renewed with
+it, but they stay on the calendar: a unit put into service at `t0` at
+age `a` survives `s` more with chance `exp(-G)`, `G` its life's
+`H(a + s) - H(a)` plus `-log(1 - p)` for each demand in `(t0, t0 + s]`
+(or `p` times the plan's expected demands then). From new its survival
+is `R(t) (1 - p)^N(t)` (or `R(t) exp(-p Λ(t))`), the life and the
+demands as two components in series; but each unit's life depends on
+when it is put into service, so only the simulations take it
+(`availability`, `cost`, `simulate_timelines`, on the Python engine),
+and the exact and numerical analyses refuse it. Its lever is
+`demand.probability`; a duty and a `"demand_basis"` are refused with it
+(give the life and the demands on the calendar). A plan of one rate is
+that rate. A demand mode on a group of units is not modelled: draw it as
+a component of its own in series. A spare that may fail to
 start when a unit of its standby group fails is the group's
 `"switching_probability"` (see [Standby groups](#standby-groups)).
 

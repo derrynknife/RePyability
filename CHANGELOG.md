@@ -64,6 +64,24 @@ release between minors that only adds (0.19.1).
   `demand.probability` and `demand.rate`. A duty moves the life alone,
   or the demands too with `"demand_basis": "operating"`. A
   `"demand_rate"` on a life is still refused, now naming `"demand"`.
+- Demands at set times, or on a plan of rates that changes, beside a
+  life that wears out, in one component: a spec's `"demand"` takes
+  `"times"` or `"plan"` in place of `"rate"`. The demands compete with
+  the life and are renewed with it, but stay on the calendar, so a unit
+  put into service at `t0` at age `a` survives while the life's hazard
+  from `a`, plus `-log(1 - p)` for each demand met (or `p` times the
+  plan's expected demands), stays below its draw
+  (`LifeWithPlannedDemands`). Only the simulations take it (the Python
+  engine); the exact and numerical analyses refuse it, naming them. From
+  new it equals the life and the set-times demand component in series
+  (to 1e-12); a hand-worked case with a fixed repair (Weibull(40, 1.5),
+  one demand failing it with 0.3, repairs of 35, over 68) agrees with
+  4000 seeded simulations within 4 standard errors; set times every `h`
+  with `p = c h` close in on the rate `c` as `h` shrinks; and a plan of
+  one rate is that rate, to the bit. It is saved, held by a `UnitPlan`'s
+  `demand` and has the lever `demand.probability`; a duty or a
+  `"demand_basis"` is refused with it. A `"demand"` given both a rate
+  and times now says to give one.
 
 - A cold standby pair of any lives and repairs with one repair at a time
   (`repair_crews=1`) over time, from new, which only a simulation gave:

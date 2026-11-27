@@ -3873,6 +3873,33 @@ values; the levers, saving, `UnitPlan`, units, duty and refusals. Left:
 demands at set times or on a plan beside a life (two components in
 series for now).
 
+**Demands at set times or on a plan beside a wearing life (added
+after).** "The fire pump wears (a Weibull life), and it is started at the
+weekly tests, or more often in summer: how available is it?" Who asks:
+the same engineer, with the test dates as model times (a rule's
+`rule_times`) or the expected starts by season. Before, the two modes
+were drawn as two components in series, renewed apart. Solved as the
+same spec key with `"times"` or `"plan"` in place of `"rate"`
+(`_demands.LifeWithPlannedDemands`, a life on the diagram's clock): the
+modes compete and are renewed together, but the demands stay on the
+calendar, so a unit put in at `t0` at age `a` fails when the life's
+`H(a + s) - H(a)`, plus `-log(1 - p)` a demand met (or `p` times the
+plan's expected demands), reaches its draw `-log u`; each piece between
+demands (or plan times) is the life's draw at that piece's constant
+demand rate. It is no renewal process, so it is simulated (Python
+engine) and the exact methods refuse it. Hand-worked: Weibull(40, 1.5),
+one demand at 50 failing it with 0.3, repairs of exactly 35, over 68: at
+most two failures, the second only after a life failure before 33, by a
+new unit meeting the demand if back before 50; its expected downtime is
+two nested integrals. Checks (`test_life_with_planned_demands.py`): from
+new against the life and the set-times component in series (1e-12) and
+the plan's; the life left by hand after a repair and at an age; each
+draw inverting the summed hazard, and the draws' survival from several
+start times; the hand-worked case against 4000 seeded simulations; set
+times converging to the constant rate; a plan of one rate as the rate;
+routes, saving, `UnitPlan`, the lever, units and refusals. Left: its
+values over a window exactly (a renewal equation on the clock).
+
 ### UC-73: "The standby generator is started at three planned outages next year, and it fails to start on 10% of starts. How available is it, how many failed starts do we expect, and what do the repairs cost? And the fire pump, called on more in summer than in winter?"
 
 - **Status:** built: a component spec's `"demand_times"` (a list of

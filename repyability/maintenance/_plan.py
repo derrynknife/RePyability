@@ -904,7 +904,7 @@ class UnitPlan:
     demand : dict, optional
         A demand mode beside a life that wears out, as a spec's
         ``"demand"``: the ``"probability"`` that a demand fails the unit
-        and the demands' ``"rate"``.
+        and the demands' ``"rate"``, set ``"times"`` or ``"plan"``.
 
     Examples
     --------

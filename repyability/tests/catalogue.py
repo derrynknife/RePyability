@@ -1198,6 +1198,27 @@ def repairable_kinds():
                     repair_cost=5.0,
                 )
             ),
+            # A life that wears out with demands at set times, or on a
+            # plan of rates that changes, beside it: competing risks
+            # renewed together, on the diagram's clock, so simulated.
+            "life with demands at set times": system(
+                unit(
+                    demand={
+                        "probability": 0.1,
+                        "times": [50.0, 120.0, 200.0, 260.0],
+                    },
+                    repair_cost=5.0,
+                )
+            ),
+            "life with a demand plan": system(
+                unit(
+                    demand={
+                        "probability": 0.1,
+                        "plan": {"times": [0.0, 150.0], "rates": [0.1, 0.02]},
+                    },
+                    repair_cost=5.0,
+                )
+            ),
             # Demands at set times (UC-73): a life that ends only at them,
             # on the calendar, exact over a window and simulated.
             "demand times": system(
