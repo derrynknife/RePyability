@@ -1593,7 +1593,7 @@ release between minors that only adds (0.19.1).
   |---|---|---|
   | (50,000, 3) | 1.3e-10, under 1e-12 | 1.4e-10, 3.4e-12 |
   | (50,000, 1.5) | 6.9e-8, under 1e-12 | 7.5e-10, 4.2e-12 |
-  | (50,000, 0.8) | 1.1e-6, 7.7e-11 | 3.3e-8, 9e-13 |
+  | (50,000, 0.8) | 1.1e-6, 7.6e-11 | 3.3e-8, 9e-13 |
   | (20,000, 0.6) | 1.1e-4, 4.8e-9 | 8.4e-7, 2.2e-11 |
 
   One such unit's availability within its repair was 1.0e-6 off (shape
@@ -1611,7 +1611,7 @@ release between minors that only adds (0.19.1).
   unit's values move by about 1e-9 (its new units' failures and its
   means are worked out the same way; against the grid eight times finer
   it was 1.7e-9 off and is 4e-12). Seeded and simulated results do not
-  change. A tested unit's values over time take up to twice as long.
+  change. Such a unit's values over time take 1.3 to 2.5 times as long.
   Left as they were: a test's time is still taken on the grid's points
   (about 1e-8, for any life), and so is the sum of a test's and a
   repair's times where both are spread (6e-5 in an unavailability, for
