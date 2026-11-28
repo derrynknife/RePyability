@@ -3992,9 +3992,35 @@ the set-times component (1e-12, every value); a plan of one rate against
 the rate's own renewal equation; the hand-worked case within `4 (h /
 s)^2`; seeded simulations at set times, on a plan and from an age within
 4 standard errors; routes and refusals. Left: the long run and mean
-lives (none: the demands end, or the plan is no renewal process), and a
-horizon of many up times (the grid is `O(n^2)`, at most `MAX_STEPS`
-points).
+lives (none: the demands end, or the plan is no renewal process).
+
+**Long windows (added after).** Weekly tests over many years of a unit
+that lasts a few weeks: the grid's direct sums were `O(n^2)`, so a
+window of more than about 80 typical up times was refused. The grid's
+uniform points are now a lattice whose step makes every demand, plan
+time and fixed repair end a point where they share a common step (as
+weekly tests do); from a lattice point to a lattice cell what the life
+and the repair carry depends on the steps between alone, and the
+demands' survival is a ratio of the clock's values, so the sums are
+convolutions, by FFT in blocks (`O(n log n)`); a point off the lattice
+is integrated for, as before. Up to `2**17` steps, so about 2,600
+typical up times at the coarsest step (a 50th of one). The shared
+renewal grid (`unit_curve`) cannot take it: it inverts a power series,
+which needs a kernel that is one convolution, and the demands make
+this one depend on when each unit starts. Found on the way: a fixed
+repair put each share of failures' renewals at one point, before or
+after a demand there where its mass is on both sides, an error first
+order in the step (3.6e-5 on the hand-worked case, 3.7e-4 on expected
+failures with a repair of 3.3); a share now carries a fixed repair as
+its hat, and the demands' failures, exact times, are repaired exactly,
+a repair that ends at a point in service after the demands there.
+Checks: windows of 2000 (120 up times) against 2000 seeded simulations
+at tests every 7 with repairs of 7, and on a plan, within 4 standard
+errors; a life that never fails over them, against the set-times
+component to 1e-12; the blocks' size changing nothing (1e-12); a
+demand off the lattice by a 1e5th of a step against it on (1e-7); the
+error falling as the step squared with a fixed repair; and the
+coarsest grid's refusal.
 
 ### UC-73: "The standby generator is started at three planned outages next year, and it fails to start on 10% of starts. How available is it, how many failed starts do we expect, and what do the repairs cost? And the fire pump, called on more in summer than in winter?"
 
@@ -4478,14 +4504,34 @@ points).
   enough, each failing once in 2,000 h.
 - **What they want back:** UC-74's, with the availability that of the
   diagram, and the stock chosen by the availability each dollar buys.
-- **How it is solved (the pipelines as UC-74; the holes taken as
-  independent):** each part's backorders at a base are UC-74's. A base's
-  `N Z` places of a part are each empty with chance `q = EBO / (N Z)`,
-  and its availability is the diagram's chance of working with each
-  component there with chance `1 - q`, independently (the diagram's own
-  structure, as `system_probability` works it out). For a series system
-  that is UC-74's product. A part given by its `"demand_rate"` and not
-  drawn in the diagram is needed by every system.
+- **How it is solved (the pipelines as UC-74; a part's places that
+  stand in for each other taken together):** each part's backorders at a
+  base are UC-74's. A base's `P = N Z` places of a part are each empty
+  with chance `q = EBO / P`, and its availability is the diagram's
+  chance of working (the diagram's own structure, as
+  `system_probability` works it out). A component the system needs is
+  taken on its own, with chance `1 - q`, as the textbook takes every
+  place: for a series system that is UC-74's product, unchanged. A part
+  given by its `"demand_rate"` and not drawn in the diagram is needed by
+  every system.
+  - *A part's components the system can do without* (two or more of
+    them) are taken together. The base's `B` backorders are holes in
+    `min(B, P)` places drawn evenly from the `P`, so a set of `j` places
+    is empty with chance `E[B (B - 1) ... (B - j + 1)] / (P (P - 1) ...
+    (P - j + 1))` (`B` capped at `P`), not `q^j`: a pair has both empty
+    with chance `E[B (B - 1)] / (P (P - 1))`. The holes among a
+    system's `z` such places are hypergeometric given `B`, and the
+    diagram's chance of working given `h` of them empty, placed evenly,
+    comes from the diagram worked out with each empty on its own at the
+    chances `0, 1/z, ..., 1`: a function of the places' states is a
+    polynomial of degree `z` in that chance, and those `z + 1` values
+    give its coefficients on the binomial chances of `h` holes. Several
+    such parts are independent of each other (every combination of
+    their chances). The matrix that gives the coefficients has a
+    condition number that grows about 2.6-fold a place (2.3 for a pair,
+    3.6e6 for 16), so the availability is within `cond * eps`: a few
+    1e-16 for a pair, 1e-9 for 16 places, past which the part is
+    refused.
   - *The front by availability* (`objective="availability"`; the default,
     `"auto"`, takes it for a diagram that is not a series system, and
     backorders for one that is, as UC-74). A part's loss is the fleet
@@ -4497,11 +4543,16 @@ points).
     parts, is taken. Every part's hull is then drawn again, as its loss
     depends on the others' stocks.
 - **Today:** by hand (UC-74's script, the pumps' demand doubled):
-  - *With nothing held:* a pump's place is empty with chance `5.8176 /
-    24 = 0.2424` at both bases, so the pair is up with `1 - 0.2424^2 =
-    0.94124`; with the valve's 0.9504 and the controllers' `0.88435^2`
-    the availability is 0.69961 (as needed parts, the pumps alone would
-    leave `0.7576^2 = 0.574`).
+  - *With nothing held:* the north base's pumps in the pipeline are
+    Poisson of mean 5.8176, all of them owed, in 24 places: a pair has
+    both empty with chance `5.8176^2 / (24 * 23) = 0.06131` (a Poisson's
+    `E[B (B - 1)]` is its mean squared; the chance of more than 24 owed
+    is 3e-9), where places empty on their own give `0.2424^2 =
+    0.05876`. The south's is `3.8784^2 / (16 * 15) = 0.06267`. With the
+    valve's 0.9504 and the controllers' `0.88435^2` the bases'
+    availabilities are 0.69771 and 0.69670, and the fleet's 0.69731
+    (0.69961 with the holes independent; as needed parts, the pumps
+    alone would leave `0.7576^2 = 0.574`).
   - *For 95%, by availability:* 210,000, with no pump at a base:
 
     | Part | Depot | North | South |
@@ -4510,40 +4561,58 @@ points).
     | valve | 2 | 1 | 1 |
     | controller | 4 | 1 | 1 |
 
-    for an availability of 0.95444 (north 0.95174, south 0.95847), with
-    6.2541 backorders, most of them pumps a system does without.
+    for an availability of 0.95114 (north 0.94866, south 0.95485; the
+    same stock gave 0.95444 with the holes independent), with 6.2541
+    backorders, most of them pumps a system does without.
   - *By backorders* (UC-74's front on this diagram) the first stock to
     reach 95% costs 278,000: twelve pumps (seven at the depot), a valve
-    fewer at the depot and a controller fewer, for 0.95577 and 1.5051
+    fewer at the depot and a controller fewer, for 0.95475 and 1.5051
     backorders. The redundancy is worth 68,000 of spares here, and
     backorders do not see it.
 - **Checks:** the hand-worked numbers; every point of both fronts, both
-  methods, against the model written out with the pair's `1 - q^2`; a
-  diagram that is not series-parallel against every state of its places;
+  methods, against the model written out with the pair's `E[B (B - 1)] /
+  (P (P - 1))` term by term; k-out-of-n stages (1 of 2, 2 of 3, 2 of 4,
+  1 of 5, 5 of 6), two parts' places on a diagram that is not
+  series-parallel with a third place the system needs, and components of
+  two places each, against every placing of the base's holes counted
+  (bound fixed before running from the condition number, 71 at six
+  places: 1e-12); 1 of 16 against the hypergeometric written out (1e-9);
+  a series diagram's fronts before and after the places were taken
+  together, compared in full (20 fronts, both methods and every
+  objective, a base's own times and three of a part to a system:
+  identical to the last bit);
+  a diagram that is not series-parallel against every state of its places;
   a series diagram worked out through its structure against the product;
   one part's front by availability, on a pair and on series systems,
   against a search of every stock vector (nothing at a point's spend or
   less is more available), and two parts' on a pair the same; UC-74's
   results unchanged to the last bit (its fronts before and after,
   compared in full); the unit of time.
-  *The independence of the holes*, by error analysis and a seeded
-  simulation: with `B` backorders at a base of `P = N Z` places, the
-  holes are in places drawn evenly, so a pair has both empty with chance
-  `E[B (B - 1)] / (P (P - 1))`, where the model has `(E[B] / P)^2`. In
-  UC-74's exact setting (nothing at the depot, fixed depot repairs), two
-  pumps at the north base and one at the south, that is 0.02993 and
-  0.03852 against the model's 0.02561 and 0.03283. The simulation
-  (2,000 runs as UC-74's, the holes placed by a seeded draw at the end
-  of each; bound fixed before running: four standard errors from the
-  first form) gave 0.02950 (standard error 0.00119) and 0.03606
-  (0.00155).
-- **Learned / open questions:** taking the holes as independent
-  understates a pair's chance of being down, here by 14 to 15% of it
-  (0.004 to 0.006 of a base's availability): backorders vary more than
-  their mean says, and two holes at once are likelier for it. The exact
-  form above needs the backorders' second moment, which the pipelines
-  have (for a pair; a general diagram needs the chance of each set of
-  places): left for later. The front by availability has UC-74's
+  *The pair's holes*, by a seeded simulation: in UC-74's exact setting
+  (nothing at the depot, fixed depot repairs), two pumps at the north
+  base and one at the south, a pair is down with chance 0.02993 and
+  0.03852 (the model's, to 1e-12 of the form above; places each empty on
+  their own give 0.02561 and 0.03283). The simulation (2,000 runs as
+  UC-74's, the holes placed by a seeded draw at the end of each; bound
+  fixed before running: four standard errors) gave 0.02950 (standard
+  error 0.00119) and 0.03606 (0.00155).
+- **Learned / open questions:** taking each place on its own, as this
+  use case first did, understates a pair's chance of being down, here
+  by 14 to 15% of it (0.004 to 0.006 of a base's availability; 0.0023
+  of the fleet's with nothing held and 0.0033 at the stock for 95%,
+  which stays the same stock): backorders vary more than their mean
+  says, and two holes at once are likelier for it. For places the
+  system needs the same holes err the other way and by less (both
+  empty at once is one outage, not two: the textbook's `(1 - q)^Z` is
+  below the chance of no hole among `Z` places by about the same
+  difference, a small part of `Z q`), and they are left as the
+  textbook's, so that a series system's values stay UC-74's. Where a
+  base is owed more than it has places the availability a pair's stock
+  buys is not convex in the count (the first parts fill places whose
+  partners are empty too), and the hull skips those counts: a front
+  within a small budget can then be its first point alone. The holes'
+  law takes the pipeline's whole distribution, which is METRIC's or
+  VARI-METRIC's fit of it, exact only where UC-74's is. The front by availability has UC-74's
   guarantee for one part where a base's loss is convex in its stock (a
   part the system needs, a pair); with several parts each step is the
   best per dollar from the stock reached, which does not prove that

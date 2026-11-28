@@ -390,9 +390,14 @@ stock found for bases alike would give this fleet 0.9196.
 ### Redundant parts
 
 On a diagram that is not a series system a missing part need not ground
-a system. A base's availability is then the diagram's own, with each of
-a part's places empty with chance `EBO / (N Z)`, independently: for two
-pumps, either enough, `1 − q²`. And the stock is chosen by what it buys:
+a system. A base's availability is then the diagram's own. A place the
+system needs is empty with chance `EBO / (N Z)`, on its own, as in a
+series system. A part's places that stand in for each other are taken
+together: a base's `B` backorders are holes in places drawn evenly from
+its `P = N Z`, so two pumps, either enough, are both missing with chance
+`E[B (B − 1)] / (P (P − 1))`, which is more than the square of `EBO / P`
+(backorders vary more than their mean says). And the stock is chosen by
+what it buys:
 `objective="availability"` takes, at each step, the spares that add the
 most fleet availability per dollar from the stock reached, where
 `"backorders"` counts a backorder of a pump a system does without as one
@@ -411,7 +416,7 @@ pairs = {**parts, "pump": {**parts["pump"], "nodes": ["p1", "p2"]}}
 held = paired.spares_allocation(bases, pairs, target_availability=0.95)
 held.objective                       # 'availability'
 held.spend                           # -> 210000.0
-held.availability                    # -> 0.9544
+held.availability                    # -> 0.9511
 held.depot_stock                     # {'pump': 4, 'valve': 2, 'controller': 4}
 held.base_stock["north"]             # {'pump': 0, 'valve': 1, 'controller': 1}
 owed = paired.spares_allocation(
@@ -419,11 +424,15 @@ owed = paired.spares_allocation(
 owed.spend                           # -> 278000.0
 ```
 
-- **What is approximate.** The holes are taken as independent. For a
-  pair that understates the chance of both being missing, by about a
-  seventh of it in the cases checked (backorders vary more than their
-  mean says), so the availability of a redundant part's stage is a
-  little optimistic.
+- **Holes that stand in for each other.** Up to 16 of a part's places
+  in a system that the system can do without are taken together, their
+  holes placed evenly among the base's places given its backorders;
+  a part with more is refused (give its components as parts of their
+  own). Taking each place on its own would understate a pair's chance of
+  both being missing by about a seventh of it in the cases checked (here
+  an availability of 0.9544 for the stock above, not 0.9511). Places the
+  system needs are each taken on their own, as the textbook takes them,
+  and different parts' holes are independent.
 - **The front by availability** has the front by backorders' guarantee
   for one part (no stock at a point's spend or less is more available).
   With several parts each step is the best per dollar from the stock
