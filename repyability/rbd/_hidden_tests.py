@@ -26,7 +26,8 @@ the age grid) is followed lag by lag: the unit is working at a test with
 probability ``sum_a alpha(a) R(a)``, and has failed ``s`` after it with
 probability ``sum_a alpha(a) sum_{d <= s} g(d) (R(a) - R(a + s - d))``, ``g``
 the test's time on the grid. Each part of a distribution goes to the two
-nearest grid points, its mean kept, and the error falls as ``h ** 2``. A
+nearest grid points, its mean kept, and the error of a test's time taken
+so falls as ``h ** 2``. A
 unit with an exponential life needs no ages: it is working, failed or in a
 repair at each test, and that chain is followed from test to test instead
 (``_Chain``).
@@ -50,12 +51,31 @@ interval, ``s`` after its test, the unit is up with probability
 test's CDF, ``coef[l]`` that the test ``l`` before found a failure (whose
 unit is put back into service ``l`` intervals on with ``restart.cdf``),
 and ``failures(s)``, on the grid, its expected failures in the interval
-by ``s`` (see ``_Rows``). Between the grid's points the failures are linear,
-but an exponential life's, which follow the unit's exposure there
-(``_failed_at``): its rate of failing is then its rate while it is up, at
-any time.
+by ``s`` (see ``_Rows``). Between the grid's points an exponential life's
+failures follow the unit's exposure (``_failed_at``): its rate of failing
+is then its rate while it is up, at any time. Any other life's are in
+parts, each as smooth as it is: the new units put into service at a fixed
+time, by the life's CDF at their exact age; the new units put into
+service over a time, by a cubic through their failures on the grid, from
+where they start going in (and on a finer grid over the first cells from
+there, ``_Restart._fine``); and the units working at the test, by their
+failures for each unit of the time they have been back from it, which
+changes little, times that time, which is exact (``_Setup.back_by``).
+
+New units' failures on the grid are the life's CDF against when they go
+into service (``_Restart.failed``): a density linear across each cell
+that keeps the cell's probability and mean, against the CDF integrated
+over each cell of ages, so that a CDF far from linear across the first
+cells of ages (a Weibull's of shape below 1 rises as that power of the
+age) is taken as it is. The same density takes them through the test
+after and the interval after it (``_Restart.later``), where the last
+cells' units are still new; from the test after that they are masses on
+the age grid, which stand for the same units (``_Survival``). A unit put
+into service at a fixed time is followed on an age grid through its exact
+ages.
 """
 
+import weakref
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple
 
 import numpy as np
@@ -71,7 +91,12 @@ from ._block_replacement import (
     _values,
 )
 from ._model_utils import distribution_name, never_fails
-from ._point_availability import _KNOT_PROBABILITIES, Atoms, _events
+from ._point_availability import (
+    _KNOT_PROBABILITIES,
+    Atoms,
+    _cell_integrals,
+    _events,
+)
 
 #: A unit's chance of still working below which a cycle has ended (its
 #: later terms are then exact to rounding).
@@ -317,17 +342,17 @@ def _at_most(fixed: float) -> Callable:
 _GAUSS = np.polynomial.legendre.leggauss(8)
 
 
-def _shares(sf, cells: int, h: float, shift: float = 0.0):
+def _shares(sf, cells: int, h: float, shift: float = 0.0, origin=0.0):
     """A time ``shift`` plus a duration whose survival function is ``sf``,
-    on the grid of step ``h`` from 0: each of the first ``cells`` cells'
-    probability split between its two ends so that its mean is kept,
+    on the grid of step ``h`` from ``origin``: each of the first ``cells``
+    cells' probability split between its two ends so that its mean is kept,
     ``left = S(x_c) - (mean of S over the cell)`` and ``right = (mean of S)
     - S(x_{c + 1})``, ``S`` the time's survival function. Each is a
     difference of values near each other, to rounding (where one from a
     running integral would lose ``h`` against the grid's length); the
     cell the time starts in is split there."""
     points, weights = _GAUSS
-    x = h * np.arange(cells + 1)
+    x = origin + h * np.arange(cells + 1)
 
     def survival(t):
         t = np.asarray(t, dtype=float)
@@ -339,13 +364,13 @@ def _shares(sf, cells: int, h: float, shift: float = 0.0):
     half = 0.5 * h
     nodes = (a + half)[:, None] + half * points[None, :]
     mean = 0.5 * (survival(nodes) @ weights)
-    first = int(np.floor(shift / h))
-    if 0 <= first < cells and shift > first * h:
+    first = int(np.floor((shift - origin) / h))
+    if 0 <= first < cells and shift > x[first]:
         # Split at the shift: 1 before it, the duration's survival after.
-        lo, hi = shift, (first + 1) * h
+        lo, hi = shift, x[first + 1]
         mid, width = 0.5 * (lo + hi), 0.5 * (hi - lo)
         after = width * float(survival(mid + width * points) @ weights)
-        mean[first] = ((shift - first * h) + after) / h
+        mean[first] = ((shift - x[first]) + after) / h
     left = np.maximum(S[:-1] - mean, 0.0)
     right = np.maximum(mean - S[1:], 0.0)
     return left, right
@@ -358,13 +383,36 @@ class _Entry:
     they all do, if it is one, and else ``start``, before which none
     does."""
 
-    def __init__(self, cdf: Callable, grid: np.ndarray, atom, start=0.0):
+    def __init__(
+        self,
+        cdf: Callable,
+        grid: np.ndarray,
+        atom,
+        start=0.0,
+        setup: Optional["_Setup"] = None,
+        failures: Optional[np.ndarray] = None,
+        near: Optional["_Near"] = None,
+    ):
         self.cdf = cdf
         self.grid = grid
         self.on_grid = np.asarray(cdf(grid), dtype=float)
         self.atom = None if atom is None else float(atom)
         self.start = float(start)
         self._whole: Dict[float, np.ndarray] = {}
+        #: For new units (a restart's): those that have failed by each
+        #: point of the grid (``_Restart.failed``).
+        self.setup, self.failures, self.near = setup, failures, near
+
+    @property
+    def frame(self) -> tuple:
+        """What its new units' failures are read on between the grid's
+        points (``_read``): where they start going in, and the
+        finer grid from there, if any."""
+        near = self.near
+        if near is None:
+            return (max(self.start, 0.0),)
+        cells = len(near.values) - 1
+        return (max(self.start, 0.0), near.origin, near.step, cells, near.last)
 
     def failed(self, rate: float, j: np.ndarray, s: np.ndarray, cdf=None):
         """Of the units that go into service after the ``j``-th point of
@@ -395,6 +443,48 @@ class _Entry:
 
 
 _GAUSS3 = np.polynomial.legendre.leggauss(3)
+
+#: New units' failures are worked out again over the first ``_NEAR`` cells
+#: from where they start going into service, on a grid ``_FINER`` times
+#: finer (see ``_Restart._fine``).
+_NEAR, _FINER = 32, 64
+
+
+class _Near(NamedTuple):
+    """New units' failures over the first cells after they start going
+    into service (``_Restart._fine``): from ``origin`` in the interval,
+    at each ``step`` (``values``), up to the grid's point ``last``;
+    ``first`` is the grid's first point from ``origin`` on."""
+
+    origin: float
+    step: float
+    values: np.ndarray
+    first: int
+    last: int
+
+    def at(self, s, rate: bool = False) -> np.ndarray:
+        """At ``s`` in the interval (from ``origin`` to where it ends)."""
+        values = self.values
+        return _from_start(
+            lambda i: values[i],
+            np.asarray(s, dtype=float) - self.origin,
+            self.step,
+            len(values) - 1,
+            0.0,
+            rate,
+        )
+
+
+class _ByRow(NamedTuple):
+    """A restart's new units' failures for intervals each with its
+    chances that the tests before found a failure (``_Restart.by_row``):
+    by each point of the grid (``on_grid``, a row an interval), but
+    those of units put in at a fixed time; and the same in parts, by
+    what each lag's are read on between the grid's points
+    (``_Entry.frame``): on the grid, and on the finer grid, if any."""
+
+    on_grid: np.ndarray
+    frames: Dict[tuple, Tuple[np.ndarray, Optional[np.ndarray]]]
 
 
 class _Restart:
@@ -437,6 +527,15 @@ class _Restart:
         last = np.flatnonzero(in_each > 0.0)
         count = int(last[-1]) + 1 if last.size else 1
         self.masses = masses[:count]
+        self.setup = setup
+        #: Each cell's two shares, by interval, and what they were
+        #: divided by to add up to 1.
+        self._shares = left[:count], right[:count]
+        self._total = total
+        self._failed: Dict[int, np.ndarray] = {}
+        self._later: Dict[int, np.ndarray] = {}
+        self._near: Dict[int, Optional[_Near]] = {}
+        self._by_row: Dict[int, Tuple[Any, _ByRow]] = {}
         share = in_each[:count]
         self._pending = np.concatenate([np.cumsum(share[::-1])[::-1], [0.0]])
         #: Its CDF at the long grid's points.
@@ -498,10 +597,144 @@ class _Restart:
         """The intervals it can fall in."""
         return len(self.masses)
 
+    @property
+    def fixed_at(self) -> Optional[float]:
+        """How long after a test its units all go into service, if they
+        do at one such time (in whichever interval)."""
+        return None if self.atom is None else self.atom[1]
+
     def pending(self, lag) -> np.ndarray:
         """``P(not put into service before the lag-th test)``."""
         lag = np.asarray(lag)
         return self._pending[np.clip(lag, 0, len(self._pending) - 1)]
+
+    def failed(self, lag: int) -> np.ndarray:
+        """Of the units it puts into service in the ``lag``-th interval,
+        those that have failed by each point of the grid: the life's CDF
+        against when they go in, taken in each cell as a density linear
+        across it that keeps the cell's two shares (its probability and
+        its mean), and the CDF integrated over each cell of ages
+        (``_Setup.aged``). So the error follows how the entry bends, not
+        the life: a life's CDF that rises as a power of the age below 1 is
+        nowhere near linear across the first cells of ages, and masses at
+        the grid's points against it were 6% of ``F(h)`` off for the units
+        in their first cell (a Weibull life of shape 0.8). A fixed time
+        takes the CDF at the exact age; and over the first cells from
+        where they start going in, the same is worked out on a finer grid
+        (``_fine``), whose values the grid's points there take."""
+        if lag not in self._failed:
+            self._failed[lag] = self._failed_in(lag)
+        return self._failed[lag]
+
+    def _failed_in(self, lag: int) -> np.ndarray:
+        setup = self.setup
+        steps = setup.steps
+        out = np.zeros(steps + 1)
+        if lag < 0 or lag >= self.lags:
+            return out
+        if self.atom is not None:
+            if self.atom[0] == lag:
+                out = setup.failed_by(setup.grid - self.atom[1])
+            return out
+        left, right = self._shares[0][lag], self._shares[1][lag]
+        # Over this interval and the next (``later``).
+        flat, slope = setup.aged(cells=2 * steps)
+        both = np.zeros(2 * steps + 1)
+        both[1:] = _convolve(left + right, flat)[: 2 * steps]
+        both[1:] += 6.0 * _convolve(right - left, slope)[: 2 * steps]
+        both = np.clip(both, 0.0, None)
+        out, self._later[lag] = both[: steps + 1].copy(), both[steps:]
+        near = self._fine(lag)
+        if near is not None:
+            # On the finer grid's values, made to meet the grid's where
+            # the finer grid ends.
+            if near.values[-1] > 0.0:
+                near = near._replace(
+                    values=near.values * (out[near.last] / near.values[-1])
+                )
+            k = np.arange(near.first, near.last)
+            out[k] = near.at(k * setup.h)
+        self._near[lag] = near
+        return out
+
+    def later(self, lag: int) -> np.ndarray:
+        """``failed`` through the interval after the ``lag``-th: by each
+        point of its grid, from the same density across each cell, so
+        that those working at the test between are those not failed by
+        the interval's end, and the last cells' units, new at that test,
+        fail after it as new units do."""
+        self.failed(lag)
+        return self._later[lag]
+
+    def by_row(self, coef: np.ndarray) -> "_ByRow":
+        """Its new units' failures added up for intervals whose tests
+        before found a failure with the chances ``coef`` (a row each: see
+        ``_Rows``), once for all the times asked of them."""
+        known = self._by_row.get(id(coef))
+        if known is None or known[0]() is not coef:
+            lags = min(self.lags, coef.shape[1])
+            entries = [self.entry(lag) for lag in range(lags)]
+            frames: Dict[tuple, list] = {}
+            for lag, entry in enumerate(entries):
+                if entry.atom is None:
+                    frames.setdefault(entry.frame, []).append(lag)
+            rows = len(coef)
+            on_grid = np.zeros((rows, self.steps + 1))
+            tables = {}
+            for frame, at in frames.items():
+                coarse = coef[:, at] @ np.array(
+                    [entries[lag].failures for lag in at]
+                )
+                fine = None
+                if len(frame) > 1:
+                    fine = coef[:, at] @ np.array(
+                        [entries[lag].near.values for lag in at]
+                    )
+                on_grid += coarse
+                tables[frame] = (coarse, fine)
+            # Kept while the rows are (a curve's, or the long run's).
+            known = (weakref.ref(coef), _ByRow(on_grid, tables))
+            self._by_row[id(coef)] = known
+            weakref.finalize(coef, self._by_row.pop, id(coef), None)
+        return known[1]
+
+    def near(self, lag: int) -> Optional["_Near"]:
+        """The ``lag``-th interval's new units' failures over the first
+        cells after they start going in, on a finer grid (``_Near``)."""
+        self.failed(lag)
+        return self._near.get(lag)
+
+    def _fine(self, lag: int) -> Optional["_Near"]:
+        """``failed`` on a grid ``_FINER`` times finer over the first
+        ``_NEAR`` cells from where units start going into service in the
+        ``lag``-th interval (its start, or when the time before the
+        duration is over), to a point of the grid: a life's CDF that
+        rises as a power of the age makes their failures bend there as
+        no cubic through the grid's points follows (as the age to that
+        power and one more), and a duration of a few cells is itself
+        taken as only so many lines."""
+        if self.duration is None:
+            return None
+        setup = self.setup
+        h, steps = setup.h, setup.steps
+        begin = lag * self.T
+        origin = max(self.shift - begin, 0.0)
+        if origin >= self.T:
+            return None
+        first = int(np.ceil(origin / h - 1e-9))
+        last = min(first + _NEAR, steps)
+        reach = last * h - origin
+        cells = _FINER * max(int(round(reach / h)), 1)
+        step = reach / cells
+        sf = getattr(self.duration, "sf", None) or self.duration.model.sf
+        left, right = _shares(sf, cells, step, self.shift, begin + origin)
+        left, right = left / self._total, right / self._total
+        flat, slope = setup.aged(step, cells)
+        values = np.zeros(cells + 1)
+        values[1:] = _convolve(left + right, flat)[:cells]
+        values[1:] += 6.0 * _convolve(right - left, slope)[:cells]
+        values = np.clip(values, 0.0, None)
+        return _Near(origin, step, values, first, last)
 
     def _frame_cdf(self, x: np.ndarray) -> np.ndarray:
         """``P(put into service by x)``, ``x`` from the frame's start."""
@@ -534,6 +767,9 @@ class _Restart:
                 self.h * np.arange(self.steps + 1),
                 atom,
                 self.shift - lag * self.T,
+                self.setup,
+                self.failed(lag),
+                self.near(lag),
             )
         return self._entries[lag]
 
@@ -552,6 +788,18 @@ class _Restart:
         local = self._knots - lag * self.T
         return local[(local >= 0.0) & (local < self.T)]
 
+    def starts(self, lag: int) -> np.ndarray:
+        """Where in the ``lag``-th interval new units start going into
+        service: its start, or where the time before the duration is
+        over, or the fixed time."""
+        if lag < 0 or lag >= self.lags:
+            return np.empty(0)
+        if self.atom is not None:
+            at_lag, at = self.atom
+            return np.array([at]) if at_lag == lag else np.empty(0)
+        local = max(self.shift - lag * self.T, 0.0)
+        return np.array([local]) if local < self.T else np.empty(0)
+
 
 class _MixedEntry:
     """``_Entry``'s for one interval, weighted (see ``_Starts``): the
@@ -561,6 +809,7 @@ class _MixedEntry:
         self.parts = parts
         self.on_grid = sum(w * entry.on_grid for w, entry in parts)
         self.atom = None
+        self.failures = sum(w * entry.failures for w, entry in parts)
 
     def cdf(self, s) -> np.ndarray:
         return sum(w * entry.cdf(s) for w, entry in self.parts)
@@ -588,6 +837,19 @@ class _Starts(_Restart):
         if self.weight <= 0.0:
             raise ValueError("no units put into service")
         self.T, self.steps, self.h = setup.interval, setup.steps, setup.h
+        self.setup = setup
+        self._failed = {}
+        self._later = {}
+        self._near = {}
+        #: The parts by how long after a test their units all go into
+        #: service (to a billionth of a step), None for those whose units
+        #: do over a time: each kind is followed on its own ages
+        #: (``_walk``).
+        self.kinds: Dict[Optional[float], list] = {}
+        for part in parts:
+            at = part[1].fixed_at
+            kind = None if at is None else round(at / self.h, 9) * self.h
+            self.kinds.setdefault(kind, []).append(part)
         lags = max(lag + r.lags for _, r, lag in parts)
         masses = np.zeros((lags, self.steps + 1))
         #: The parts in each interval: (weight, restart, its own lag).
@@ -619,6 +881,22 @@ class _Starts(_Restart):
             out = out + w * r.cdf(own, s)
         return out
 
+    @property
+    def fixed_at(self) -> Optional[float]:
+        (kind,) = self.kinds if len(self.kinds) == 1 else (None,)
+        return kind
+
+    def _failed_in(self, lag: int) -> np.ndarray:
+        out = np.zeros(self.steps + 1)
+        later = np.zeros(self.steps + 1)
+        if 0 <= lag < self.lags:
+            for w, r, own in self._by_lag[lag]:
+                out = out + w * r.failed(own)
+                if r.fixed_at is None:
+                    later = later + w * r.later(own)
+        self._later[lag] = later
+        return out
+
     def entry(self, lag: int):
         if lag not in self._mixed:
             parts = []
@@ -631,6 +909,9 @@ class _Starts(_Restart):
                 lambda s: np.zeros(np.shape(s)),
                 self.h * np.arange(self.steps + 1),
                 None,
+                0.0,
+                self.setup,
+                np.zeros(self.steps + 1),
             )
         return found
 
@@ -638,6 +919,12 @@ class _Starts(_Restart):
         if lag < 0 or lag >= self.lags:
             return np.empty(0)
         parts = [r.knots(own) for _, r, own in self._by_lag[lag]]
+        return np.unique(np.concatenate(parts)) if parts else np.empty(0)
+
+    def starts(self, lag: int) -> np.ndarray:
+        if lag < 0 or lag >= self.lags:
+            return np.empty(0)
+        parts = [r.starts(own) for _, r, own in self._by_lag[lag]]
         return np.unique(np.concatenate(parts)) if parts else np.empty(0)
 
 
@@ -693,6 +980,15 @@ class _Setup:
         nonzero = np.flatnonzero(g)
         #: The test's time as masses on the grid's points.
         self.g = g[: (int(nonzero[-1]) if nonzero.size else 0) + 1]
+        #: How long a unit working at a test has been back from it by
+        #: each point of the grid, ``integral_0^s G``, from those masses
+        #: (as its failures on the grid are); and the grid's first point
+        #: by which that is more than a thousandth of a step (before it,
+        #: failures for each unit of that time would be rounding).
+        over = np.cumsum(_padded(self.g, steps + 1))
+        self.back = h * np.concatenate([[0.0], np.cumsum(over)[:-1]])
+        self.back_from = int(np.searchsorted(self.back, 1e-3 * h))
+        self._back_edges: Optional[Tuple[np.ndarray, np.ndarray]] = None
         self.F = np.clip(_values(life.ff, self.grid), 0.0, 1.0)
         self.F[0] = 0.0
         if D.fixed is not None:
@@ -702,6 +998,7 @@ class _Setup:
         else:
             self.restart = _Restart.sum_of(self, D, R)
         self._entry: Optional[_Entry] = None
+        self._aged: Dict[tuple, Tuple[np.ndarray, np.ndarray]] = {}
         #: Where in an interval the test's CDF bends.
         self.test_knots = np.empty(0)
         if D.fixed is not None and D.fixed > 0.0:
@@ -709,6 +1006,45 @@ class _Setup:
         elif D.fixed is None and D.model is not None:
             q = np.ravel(_values(D.model.qf, _KNOT_PROBABILITIES))
             self.test_knots = np.unique(q[np.isfinite(q) & (q > 0.0)])
+
+    def failed_by(self, age) -> np.ndarray:
+        """The life's CDF at each ``age`` (0 before 0)."""
+        age = np.asarray(age, dtype=float)
+        F = np.clip(_values(self.life.ff, np.maximum(age, 0.0)), 0.0, 1.0)
+        return np.where(age > 0.0, F, 0.0)
+
+    def aged(
+        self, step: Optional[float] = None, cells: Optional[int] = None
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """The life's CDF over each of the first ``cells`` cells of ages
+        of ``step`` (by default the grid's, to the interval's end), for
+        units that reach those ages together: its mean there (``flat``),
+        and its mean times how far before the cell's middle, as a share
+        of the step (``slope``). Units going into service over a step
+        with a density linear across it, their probability ``m`` and the
+        shares of it ``left`` and ``right`` at its two ends keeping their
+        mean, have failed with ``m flat[i] + 6 (right - left) slope[i]``
+        by ``i`` steps after they are all in. The integrals are split at
+        the life's quantiles, and the first cell halved towards 0 again
+        and again, where a CDF may rise as a power of the age."""
+        step = self.h if step is None else float(step)
+        cells = self.steps if cells is None else int(cells)
+        if (step, cells) not in self._aged:
+            edges = step * np.arange(cells + 1)
+            p = 1.0 - never_fails(self.life)
+            q = np.ravel(_values(self.life.qf, p * _KNOT_PROBABILITIES))
+            splits = np.concatenate(
+                [q[np.isfinite(q)], step * 0.5 ** np.arange(1.0, 41.0)]
+            )
+
+            def before_middle(a):
+                since = a / step - np.clip(np.floor(a / step), 0, cells - 1)
+                return self.failed_by(a) * (0.5 - since)
+
+            whole = _cell_integrals(self.failed_by, edges, splits)
+            weighted = _cell_integrals(before_middle, edges, splits)
+            self._aged[(step, cells)] = whole / step, weighted / step
+        return self._aged[(step, cells)]
 
     def cells(self, reach: float) -> int:
         """The grid's cells from 0 past ``reach``, and an interval more."""
@@ -726,6 +1062,26 @@ class _Setup:
         """``P(the test is over by s after it starts)``."""
         return self.test.cdf(np.asarray(s, dtype=float))
 
+    def back_by(self, s) -> np.ndarray:
+        """``integral_0^s G``: how long, of the first ``s`` after a test,
+        the test has been over (exact at any time: between the grid's
+        points and where the test's CDF bends, by 8-point Gauss-Legendre
+        quadrature)."""
+        s = np.asarray(s, dtype=float)
+        if self.test.fixed is not None:
+            return np.maximum(s - self.test.fixed, 0.0)
+        if self._back_edges is None:
+            edges = np.unique(np.concatenate([self.grid, self.test_knots]))
+            edges = edges[edges <= self.interval]
+            self._back_edges = edges, _cumulative(self.G, edges)
+        edges, total = self._back_edges
+        cell = np.clip(np.searchsorted(edges, s, "right") - 1, 0, None)
+        cell = np.minimum(cell, len(edges) - 1)
+        points, weights = _GAUSS
+        half = 0.5 * np.maximum(s - edges[cell], 0.0)
+        nodes = (edges[cell] + half)[..., None] + half[..., None] * points
+        return total[cell] + half * (self.G(nodes) @ weights)
+
     def entry(self) -> "_Entry":
         """The units working at a test, back in service when it is over."""
         if self._entry is None:
@@ -740,10 +1096,22 @@ class _Setup:
 
 class _Survival:
     """A life's survival function on the age grid ``origin + i h``, worked
-    out a block at a time as the ages a walk reaches grow."""
+    out a block at a time as the ages a walk reaches grow. With
+    ``spread``, for units put into service over a time, whose masses on
+    the grid's ages keep each cell's probability and mean: a mass at an
+    age stands for units of the ages a cell either side, so their
+    survival is the life's less a twelfth of its second difference there
+    (the masses are spread wider than the units, by a sixth of a step
+    squared; as ``_Restart.failed`` takes them, to the step's fourth
+    power where the life is smooth). The units working at a test are
+    then those not failed before it, to rounding, where the survival at
+    the grid's ages alone left a cycle's failures 1e-9 off. (The masses
+    join the walk at their units' second test, of an interval's age or
+    more: see ``_Restart.later``.)"""
 
-    def __init__(self, life, origin: float, h: float, node):
+    def __init__(self, life, origin: float, h: float, node, spread=False):
         self.life, self.origin, self.h, self.node = life, origin, h, node
+        self.spread = spread
         self.lo = 0
         self.values = np.empty(0)
         self.count = 0
@@ -752,7 +1120,16 @@ class _Survival:
         if lo < self.lo or hi > self.lo + len(self.values):
             stop = lo + 4 * (hi - lo)
             x = self.origin + self.h * np.arange(lo, stop)
-            self.values = np.clip(_values(self.life.sf, x), 0.0, 1.0)
+            values = np.clip(_values(self.life.sf, x), 0.0, 1.0)
+            if self.spread:
+                # (Odd about age 0, so that a life linear from 0 has no
+                # second difference there.)
+                x = self.origin + self.h * np.arange(lo - 1, stop + 1)
+                failed = np.clip(_values(self.life.ff, np.abs(x)), 0.0, 1.0)
+                failed = np.where(x < 0.0, -failed, failed)
+                bend = failed[2:] - 2.0 * failed[1:-1] + failed[:-2]
+                values = np.clip(values + bend / 12.0, 0.0, 1.0)
+            self.values = values
             self.lo = lo
             self.count += stop - lo
             if self.count > _MAX_EVALUATIONS:
@@ -850,37 +1227,59 @@ def _walk(
     test with probability ``weight`` times its survival to that age (from
     a state: on an age grid through it). It is followed until the unit has
     surely failed; ``failures`` keeps the first ``keep`` lags'."""
+    if isinstance(restart, _Starts) and len(restart.kinds) > 1:
+        return _walk_each(setup, restart, keep, per)
     steps = setup.steps
     g = setup.g
     reach = len(g) - 1
     lo, ages = 0, np.empty(0)
     origin = 0.0
     lags = 0 if restart is None else restart.lags
+    # A unit of one known age at a test (working there, or put into
+    # service at a fixed time before it) is followed on an age grid
+    # through that age; units put into service over a time are spread
+    # about the grid's ages (see ``_Survival``).
+    known = None
     if alive is not None:
-        start = int(np.floor(alive[0] / setup.h))
-        origin = alive[0] - start * setup.h
+        known = float(alive[0])
         lags = max(lags, 2)
-    survival = _Survival(setup.life, origin, setup.h, setup.node)
+    elif restart is not None and restart.fixed_at is not None:
+        known = setup.interval - restart.fixed_at
+    if known is not None:
+        start = int(np.floor(known / setup.h))
+        origin = known - start * setup.h
+    survival = _Survival(
+        setup.life, origin, setup.h, setup.node, spread=known is None
+    )
     p_list: List[float] = []
     fail_list: List[float] = []
     kept: List[np.ndarray] = []
     p_by = np.zeros(per)
     failures_by = np.zeros((per, steps + 1))
+    # The units put into service over the interval before: their masses,
+    # and those still working by each point of this interval's grid, the
+    # test not counted (``_Restart.later``). They join the age walk at
+    # the test after.
+    fresh: Optional[Tuple[np.ndarray, np.ndarray]] = None
     lag = 0
     while True:
         if lag == 1 and alive is not None:
             lo, ages = _merge(lo, ages, start, np.array([float(alive[1])]))
         failures = np.zeros(steps + 1)
         p = 0.0
+        Q = None
         if ages.size:
             window = survival.window(lo, lo + len(ages) + steps)
             Q = _correlate(window, ages)
+        if fresh is not None:
+            Q = fresh[1] if Q is None else Q + fresh[1]
+        if Q is not None:
             p = float(Q[0])
             failures = np.maximum(_convolve(g, p - Q)[: steps + 1], 0.0)
         w = None
         if restart is not None and lag < restart.lags:
             w = restart.masses[lag]
-            failures = failures + _convolve(w, setup.F)[: steps + 1]
+            failures = failures + restart.failed(lag)
         p_list.append(p)
         fail_list.append(float(failures[-1]))
         if lag < keep:
@@ -890,10 +1289,17 @@ def _walk(
         if lag >= lags and p < NEGLIGIBLE:
             break
         # The ages at the next test.
+        if fresh is not None:
+            lo, ages = _merge(lo, ages, 0, fresh[0][::-1])
         if ages.size:
             lo, ages = lo - reach + steps, _convolve(ages, g[::-1])
-        if w is not None:
-            lo, ages = _merge(lo, ages, 0, w[::-1])
+        fresh = None
+        if w is not None and known is None:
+            assert restart is not None
+            working = np.maximum(float(w.sum()) - restart.later(lag), 0.0)
+            fresh = (w, working)
+        elif w is not None and w.any():
+            lo, ages = _merge(lo, ages, start, np.array([float(w.sum())]))
         ages = np.maximum(ages, 0.0)
         total = float(ages.sum())
         lo, ages = _trimmed(lo, ages)
@@ -911,6 +1317,29 @@ def _walk(
         p_by,
         failures_by,
     )
+
+
+def _walk_each(setup: _Setup, starts: _Starts, keep: int, per: int) -> _Cycle:
+    """``_walk`` for units put into service in more than one way (over a
+    time, or at one or another fixed time after a test): each kind's
+    cycle, weighted and added (a cycle is linear in its start), so that
+    each is followed on its own ages."""
+    total: Optional[list] = None
+    for parts in starts.kinds.values():
+        kind = _Starts(setup, parts)
+        share = kind.weight / starts.weight
+        cycle = [share * part for part in _walk(setup, kind, None, keep, per)]
+        if total is None:
+            total = cycle
+            continue
+        # By lag: the shorter of the two goes on as zeros.
+        for i in range(2):
+            n = max(len(total[i]), len(cycle[i]))
+            total[i] = _padded(total[i], n) + _padded(cycle[i], n)
+        for i in range(2, 5):
+            total[i] = total[i] + cycle[i]
+    assert total is not None
+    return _Cycle(*total)
 
 
 class _Rows(NamedTuple):
@@ -987,7 +1416,7 @@ class _Chain:
         self.tf = _convolve(setup.g, F)[: setup.steps + 1]
         self.kappa = 1.0 - float(self.tf[-1])
         self.rf = np.array(
-            [_convolve(w, F)[: setup.steps + 1] for w in restart.masses]
+            [restart.failed(lag) for lag in range(restart.lags)]
         )
         share = restart.masses.sum(axis=1)
         self.a = share - self.rf[:, -1]
@@ -998,7 +1427,7 @@ class _Chain:
         self.first = first
         if first is not None:
             self.rf0 = np.array(
-                [_convolve(w, F)[: setup.steps + 1] for w in first.masses]
+                [first.failed(lag) for lag in range(first.lags)]
             )
             self.a0 = first.masses.sum(axis=1) - self.rf0[:, -1]
 
@@ -1122,10 +1551,20 @@ class TestedLongRun:
         G = setup.test_integral
         cdfs = np.array([restart.integral(lag) for lag in range(lags)])
         pend = restart.pending(np.arange(lags))
-        grid_integral = setup.h * (
-            rows.failures.sum(axis=1)
-            - 0.5 * (rows.failures[:, 0] + rows.failures[:, -1])
-        )
+        # The failures by each time since the test, integrated as they
+        # are between the grid's points (``_failed_at``): three Gauss
+        # points between the times a row may bend at.
+        edges = np.append(_within(setup), T)
+        points, shares = _GAUSS3
+        middle, half = 0.5 * (edges[1:] + edges[:-1]), 0.5 * np.diff(edges)
+        s = (middle[:, None] + half[:, None] * points[None, :]).ravel()
+        weights = (half[:, None] * shares[None, :]).ravel()
+        grid_integral = np.zeros(per)
+        for position in range(per):
+            index = np.full(len(s), position)
+            entered, _ = _entered(setup, rows, index, s)
+            failed = _failed_at(setup, rows, index, s, entered)
+            grid_integral[position] = float(weights @ failed)
         up = rows.tested * G + rows.coef @ cdfs - grid_integral
         down = (
             rows.tested * (T - G)
@@ -1191,12 +1630,11 @@ class TestedLongRun:
         if self.setup.rate is not None:
             up = _values_at(self.setup, self.rows, position, s)[0]
             return self.setup.rate * up
-        h = self.setup.h
-        j = np.clip(np.floor(s / h).astype(int), 0, self.setup.steps - 1)
-        failures = self.rows.failures
-        return np.maximum(
-            (failures[position, j + 1] - failures[position, j]) / h, 0.0
+        entered, _ = _entered(self.setup, self.rows, position, s)
+        rate = _failed_at(
+            self.setup, self.rows, position, s, entered, rate=True
         )
+        return np.maximum(rate, 0.0)
 
     def around(self, position: int) -> Tuple[Tuple[float, float], ...]:
         """Up and down just before the test at ``position`` (at the end of
@@ -1220,13 +1658,28 @@ class TestedLongRun:
         )
 
 
-def _within(setup: _Setup) -> np.ndarray:
-    """Where across an interval a row may bend: its grid's points, and the
-    test's and the restarts' knots."""
-    restart = setup.restart
-    parts = [setup.grid[:-1], setup.test_knots]
+def _bends(setup: _Setup, restart: Optional[_Restart] = None) -> list:
+    """Where across an interval a row bends other than at its grid's
+    points: the test's and the restarts' knots (``restart``, by default
+    the setup's), and, for a life that is not exponential, times closing
+    in on where new units start going into service, where their rate of
+    failing may rise as a power of their age (or fall as one, without
+    bound, from a fixed time)."""
+    restart = setup.restart if restart is None else restart
+    parts = [setup.test_knots]
     parts += [restart.knots(lag) for lag in range(restart.lags)]
-    within = np.unique(np.concatenate(parts))
+    if setup.rate is None:
+        closing = setup.h * 2.0 ** -np.arange(40.0, -1.0, -1.0)
+        for lag in range(restart.lags):
+            for start in restart.starts(lag):
+                parts.append(start + closing)
+    return parts
+
+
+def _within(setup: _Setup) -> np.ndarray:
+    """Where across an interval a row may bend: its grid's points, and
+    where else it does (``_bends``)."""
+    within = np.unique(np.concatenate([setup.grid[:-1]] + _bends(setup)))
     return within[(within >= 0.0) & (within < setup.interval)]
 
 
@@ -1238,14 +1691,27 @@ def _values_at(setup: _Setup, rows: _Rows, index, s, first=None, lag=None):
     entered, pending = _entered(setup, rows, index, s, first, lag)
     up = np.zeros(s.shape)
     down = rows.missed[index].astype(float)
-    for (weight, cdf, _), wait in zip(entered, pending):
+    for (weight, cdf, _, _), wait in zip(entered, pending):
         up = up + weight * cdf
         down = down + weight * (wait - cdf)
-    failed = _failed_at(setup, rows.failures, index, s, entered)
+    failed = _failed_at(setup, rows, index, s, entered)
     return (
         np.clip(up - failed, 0.0, 1.0),
         np.clip(down + failed, 0.0, 1.0),
     )
+
+
+class _In(NamedTuple):
+    """Units going into service in an interval, for each time asked:
+    their probability, the chance that they are in service by then and
+    their ``_Entry``; and for those the setup's restart puts in, how
+    many tests before the interval's the one that found them failed
+    was (``back``)."""
+
+    weight: Any
+    cdf: Any
+    entry: Any
+    back: Optional[int] = None
 
 
 def _entered(setup: _Setup, rows: _Rows, index, s, first=None, lag=None):
@@ -1257,14 +1723,14 @@ def _entered(setup: _Setup, rows: _Rows, index, s, first=None, lag=None):
     each, the chance that it is not by the interval's end."""
     restart = setup.restart
     test = setup.entry()
-    entered = [(rows.tested[index], test.cdf(s), test)]
+    entered = [_In(rows.tested[index], test.cdf(s), test)]
     pending = [1.0]
     for back in range(restart.lags):
         coef = rows.coef[index, back]
         if not np.any(coef):
             continue
         entry = restart.entry(back)
-        entered.append((coef, entry.cdf(s), entry))
+        entered.append(_In(coef, entry.cdf(s), entry, back))
         pending.append(float(restart.pending(back)))
     if first is not None:
         for back in np.unique(lag[lag < first.lags]):
@@ -1272,14 +1738,15 @@ def _entered(setup: _Setup, rows: _Rows, index, s, first=None, lag=None):
             entry = first.entry(int(back))
             cdf = np.zeros(s.shape)
             cdf[on] = entry.cdf(s[on])
-            entered.append((on.astype(float), cdf, entry))
+            entered.append(_In(on.astype(float), cdf, entry))
             pending.append(float(first.pending(back)))
     return entered, pending
 
 
-def _failed_at(setup: _Setup, table: np.ndarray, index, s, entered):
-    """The rows ``index`` of ``table`` (a unit's expected failures in an
-    interval, by each point of the grid) at ``s`` after their tests.
+def _failed_at(setup: _Setup, rows, index, s, entered, rate: bool = False):
+    """A unit's expected failures in the intervals ``index`` of ``rows``
+    (a ``_Rows``, or only its failures by each point of the grid, for
+    units no test before found failed) at ``s`` after their tests.
 
     Between two points of the grid, an exponential life's failures fall
     as its units are exposed: those up at the cell's start, since then,
@@ -1289,42 +1756,272 @@ def _failed_at(setup: _Setup, table: np.ndarray, index, s, entered):
     within a cell where a test's or a repair's CDF does, and their rate
     is the life's while the unit is up: taken as linear across the cell,
     a system's failures with another unit down in the same repairs were
-    1e-6 off. Any other life's are linear between the grid's points."""
-    h, rate = setup.h, setup.rate
-    if rate is None:
-        return _interpolated(table, index, s, h)
+    1e-6 off.
+
+    Any other life's are in parts, each smooth from where it starts: the
+    new units each of ``entered`` puts into service (``_new_failed``:
+    exact from a fixed time, and else from where they start going in),
+    and the units working at the test, which is what is left of the
+    table: their failures for each unit of the time they have been back
+    from the test, on the grid, times that time, which is exact at any
+    time (``_Setup.back_by``). With ``rate``, how fast the unit is
+    failing at ``s``: the same parts' rates of change (any other life's
+    only: an exponential life's is its rate while it is up)."""
+    h, life_rate = setup.h, setup.rate
     s = np.asarray(s, dtype=float)
     shape = s.shape
     s = s.ravel()
     index = np.broadcast_to(np.asarray(index, dtype=int), shape).ravel()
+    by_row = None
+    if isinstance(rows, _Rows):
+        table = rows.failures
+        if life_rate is None:
+            by_row = setup.restart.by_row(rows.coef)
+    else:
+        table = rows
+    if life_rate is None:
+        # The new units: those the tests before found failed, by row
+        # (``_Restart.by_row``), and the rest each with its weight at
+        # each time.
+        new = [
+            (np.broadcast_to(np.ravel(weight), s.shape), entry)
+            for weight, _, entry, back in entered
+            if entry.failures is not None
+            and np.any(weight)
+            and (by_row is None or back is None or entry.atom is not None)
+        ]
+        new_units = _together(
+            [(weight, entry.failures) for weight, entry in new],
+            None if by_row is None else (by_row.on_grid, index),
+        )
+
+        def tested(k):
+            return table[index, k] - new_units(k)
+
+        # The units working at the test fail as they are back from it:
+        # per unit of the time they have been back by then (the test's
+        # CDF, exact at any time, integrated), which changes little.
+        back, first = setup.back, setup.back_from
+
+        def per_time(k):
+            return tested(k) / back[k]
+
+        level = _through(per_time, s, h, first, setup.steps)
+        out = setup.back_by(s) * level
+        if rate:
+            out = setup.G(s) * level + setup.back_by(s) * _through(
+                per_time, s, h, first, setup.steps, rate=True
+            )
+        new_failed = _new_failed(setup, new, s, rate, by_row, index)
+        return (out + new_failed).reshape(shape)
     j = np.clip(np.floor(s / h).astype(int), 0, table.shape[1] - 2)
     since = np.clip(s - j * h, 0.0, h)
     start, end = table[index, j], table[index, j + 1]
     up = -start
-    for weight, _, entry in entered:
+    for weight, _, entry, _ in entered:
         up = up + np.ravel(weight) * entry.on_grid[j]
     up = np.maximum(up, 0.0)
-    part = up * -np.expm1(-rate * since)
-    whole = up * -np.expm1(-rate * h)
-    for weight, cdf, entry in entered:
+    part = up * -np.expm1(-life_rate * since)
+    whole = up * -np.expm1(-life_rate * h)
+    for weight, cdf, entry, _ in entered:
         weight = np.ravel(weight)
         if not np.any(weight):
             continue
-        part = part + weight * entry.failed(rate, j, s, np.ravel(cdf))
-        whole = whole + weight * entry.whole(rate)[j]
+        part = part + weight * entry.failed(life_rate, j, s, np.ravel(cdf))
+        whole = whole + weight * entry.whole(life_rate)[j]
     with np.errstate(divide="ignore", invalid="ignore"):
         share = np.where(whole > 0.0, part / whole, since / h)
     out = start + (end - start) * np.clip(share, 0.0, 1.0)
     return out.reshape(shape)
 
 
-def _interpolated(table: np.ndarray, index, s, h: float) -> np.ndarray:
-    """The rows ``index`` of ``table`` (on the grid of step ``h``) at
-    ``s``, linear between its points."""
-    position = np.asarray(s, dtype=float) / h
-    j = np.clip(np.floor(position).astype(int), 0, table.shape[1] - 2)
-    fraction = position - j
-    return table[index, j] * (1.0 - fraction) + table[index, j + 1] * fraction
+def _new_failed(
+    setup: _Setup, new: list, s: np.ndarray, rate: bool, by_row, index
+):
+    """The failures by each ``s`` (or with ``rate``, the rate of failing
+    then) of the new units put into service by ``new``, entries each
+    with its weight at each ``s``, and by the tests before in the rows
+    ``index`` of ``by_row`` (``_Restart.by_row``, if any): each entry
+    where it has units, a mixed entry's parts together (``_read``)."""
+    out = np.zeros(s.shape)
+    if by_row is not None:
+        out = _read(setup, [], s, rate, by_row.frames, index)
+    for weight, entry in new:
+        on = weight != 0.0
+        parts = [(1.0, entry)]
+        if isinstance(entry, _MixedEntry):
+            parts = entry.parts
+        members = [(share * weight[on], part) for share, part in parts]
+        out[on] += _read(setup, members, s[on], rate)
+    return out
+
+
+def _read(
+    setup: _Setup,
+    members: list,
+    s: np.ndarray,
+    rate: bool,
+    by_row=None,
+    index=None,
+):
+    """New units' failures by each ``s`` (or with ``rate``, their rate of
+    failing then): of ``members``, entries each with its weight at each
+    ``s``, and of ``by_row``, tables by what they are read on with a row
+    for each of several intervals, ``index`` each time's. From a fixed
+    time, the life's CDF (or density) at their exact age; else from
+    their values on the grid (``_from_start``), and over the first cells
+    after they start from those on the finer grid there
+    (``_Entry.near``). Those read on the same points (``_Entry.frame``)
+    are added there first: a cubic through their sum is the sum of
+    theirs."""
+    h, steps = setup.h, setup.steps
+    out = np.zeros(s.shape)
+    frames: Dict[tuple, list] = {frame: [] for frame in by_row or ()}
+    for weight, entry in members:
+        if entry.atom is None:
+            frames.setdefault(entry.frame, []).append((weight, entry))
+            continue
+        age = s - entry.atom
+        if rate:
+            density = _values(setup.life.df, np.maximum(age, 0.0))
+            failed = np.where(age > 0.0, np.maximum(density, 0.0), 0.0)
+        else:
+            failed = setup.failed_by(age)
+        out += weight * failed
+    for frame, together in frames.items():
+        on_grid, finer = (by_row or {}).get(frame, (None, None))
+        coarse = np.ones(s.shape, dtype=bool)
+        if len(frame) > 1:
+            start, origin, step, cells, last = frame
+            fine = (s >= origin) & (s <= last * h)
+            coarse = ~fine
+            tables = [(w[fine], entry.near.values) for w, entry in together]
+            rows = None if finer is None else (finer, index[fine])
+            out[fine] += _from_start(
+                _together(tables, rows),
+                s[fine] - origin,
+                step,
+                cells,
+                0.0,
+                rate,
+            )
+        tables = [(w[coarse], entry.failures) for w, entry in together]
+        rows = None if on_grid is None else (on_grid, index[coarse])
+        out[coarse] += _from_start(
+            _together(tables, rows), s[coarse], h, steps, frame[0], rate
+        )
+    return out
+
+
+def _together(tables: list, by_row=None) -> Callable:
+    """Tables on a grid, each with its weight for each time asked, and
+    ``by_row``, a table with a row for each of several intervals and
+    each time's interval: their weighted sum at the grid's points ``k``
+    (one for each time)."""
+    weights = np.array([weight for weight, _ in tables])
+    values = np.array([table for _, table in tables])
+
+    def on_grid(k):
+        out = np.zeros(np.shape(k))
+        if tables:
+            out = np.einsum("ij,ij->j", weights, values[:, k])
+        if by_row is not None:
+            out = out + by_row[0][by_row[1], k]
+        return out
+
+    return on_grid
+
+
+def _through(
+    on_grid: Callable,
+    s: np.ndarray,
+    h: float,
+    first: int,
+    steps: int,
+    root: Optional[float] = None,
+    rate: bool = False,
+) -> np.ndarray:
+    """At each ``s``, the cubic through a smooth function's values at
+    the four nearest of the grid's points ``k h`` from ``first`` to
+    ``steps`` (``on_grid(k)``, for an array of ``k``, each for its own
+    ``s``), and through 0 at ``root``, a time before them, if given (the
+    polynomial through them all if they are fewer). With ``rate``, the
+    cubic's rate of change."""
+    s = np.asarray(s, dtype=float)
+    extra = 0 if root is None else 1
+    count = steps - first + 1 + extra
+    size = min(4, count)
+    if size <= 0:
+        return np.zeros(s.shape)
+    cell = np.clip(np.floor(s / h).astype(int), 0, steps - 1)
+    # The node at or before each time, and the first of the nodes its
+    # cubic goes through.
+    at = np.clip(cell - first + extra, 0, count - 1)
+    lowest = np.clip(at - 1, 0, count - size)
+    nodes, values = [], []
+    for i in range(size):
+        k = first + lowest + i - extra
+        if root is None:
+            nodes.append(k * h)
+            values.append(on_grid(k))
+            continue
+        inside = lowest + i >= 1
+        k = np.maximum(k, first)
+        nodes.append(np.where(inside, k * h, root))
+        values.append(np.where(inside, on_grid(k), 0.0))
+    # Lagrange's form: each value times the product of the time's
+    # distances from the other nodes over its own node's from them
+    # (whole steps, without a root).
+    past = [s - node for node in nodes]
+    out = np.zeros(s.shape)
+    for i in range(size):
+        others = [j for j in range(size) if j != i]
+        if root is None:
+            scale: Any = h ** len(others) * float(
+                np.prod([i - j for j in others])
+            )
+        else:
+            scale = _product([nodes[i] - nodes[j] for j in others])
+        if not rate:
+            term = _product([past[j] for j in others])
+        else:
+            term = sum(
+                _product([past[j] for j in others if j != left_out])
+                for left_out in others
+            )
+        out = out + values[i] * term / scale
+    return out
+
+
+def _product(factors: list):
+    """The product of ``factors`` (1 of none)."""
+    out: Any = 1.0
+    for factor in factors:
+        out = out * factor
+    return out
+
+
+def _from_start(
+    on_grid: Callable,
+    s: np.ndarray,
+    h: float,
+    steps: int,
+    start: float = 0.0,
+    rate: bool = False,
+) -> np.ndarray:
+    """At each ``s``, a function that is 0 until ``start`` and smooth
+    from there, from its values at the grid's points (``_through``): the
+    cubic through the four points nearest ``s`` from ``start`` on, the
+    start itself (where it is 0) one of them unless it is a point of the
+    grid. A cubic follows what a line across each cell does not: how a
+    rate of failing changes across a cell, which another unit's downtime
+    changing there weighs."""
+    s = np.asarray(s, dtype=float)
+    start = min(max(float(start), 0.0), steps * h)
+    first = int(np.ceil(start / h - 1e-9))
+    root = None if abs(start - first * h) <= 1e-9 * h else start
+    out = _through(on_grid, s, h, first, steps, root, rate)
+    return np.where(s >= start, out, 0.0)
 
 
 def _detections(cycle: _Cycle, coverage: float, per: int, n: int):
@@ -1590,7 +2287,7 @@ class TestedCurve:
             entered, _ = _entered(
                 self.setup, rows, index, s, self.first_restart, k
             )
-            within = _failed_at(self.setup, rows.failures, index, s, entered)
+            within = _failed_at(self.setup, rows, index, s, entered)
             ends = rows.failures[:, -1]
             failures[later] = (
                 self.head_total + self._whole(ends, k - 1) + within
@@ -1711,7 +2408,10 @@ class TestedCurve:
         parts.append(self.first * 2.0 ** -np.arange(40.0, 0.0, -1.0))
         if self.first_restart is not None:
             frame = self.interval - self.first
-            parts.append(self.first_restart.knots(0) - frame)
+            parts += [
+                bend - frame
+                for bend in _bends(self.setup, self.first_restart)[1:]
+            ]
         times = np.concatenate(parts)
         return times[(times >= start) & (times <= stop) & (times >= 0.0)]
 
@@ -1735,10 +2435,7 @@ class TestedCurve:
         """The times in ``[start, stop]`` at which the curve bends other
         than at its grid's points (see ``curve_breaks``): the tests, and
         where the test's and the restarts' CDFs bend after each."""
-        setup = self.setup
-        restart = setup.restart
-        parts: List[np.ndarray] = [np.zeros(1), setup.test_knots]
-        parts += [restart.knots(lag) for lag in range(restart.lags)]
+        parts: List[np.ndarray] = [np.zeros(1)] + _bends(self.setup)
         within = np.unique(np.concatenate(parts))
         within = within[(within >= 0.0) & (within < self.interval)]
         return np.unique(
@@ -1938,7 +2635,7 @@ class TestedUnit:
             def failed(s):
                 index = np.zeros(len(s), dtype=int)
                 entered, _ = _entered(setup, rows, index, s)
-                return _failed_at(setup, rows.failures, index, s, entered)
+                return _failed_at(setup, rows, index, s, entered)
 
             before = float(failed(np.array([phase]))[0])
 
@@ -2058,7 +2755,7 @@ class TestedUnit:
                 index = np.zeros(len(s), dtype=int)
                 back = entry.cdf(s)
                 failed = _failed_at(
-                    setup, failures0, index, s, [(1.0, back, entry)]
+                    setup, failures0, index, s, [_In(1.0, back, entry)]
                 )
                 return back, failed
 

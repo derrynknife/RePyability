@@ -1528,6 +1528,58 @@ release between minors that only adds (0.19.1).
   them: the guide's worn 2oo3 `pfh()` reads 7.9104e-06, where it read
   7.9105e-06); a unit with any other life is worked out as before.
   Seeded and simulated results do not change.
+- A tested unit whose life is not exponential, with tests or repairs
+  that take time, was read as lines across the cells of its grid, its
+  new units put into service at the grid's points: its failures within a
+  cell were off wherever a repair's or a test's CDF bends there, and for
+  a life whose CDF rises as a power of the age below 1 (a Weibull's of
+  shape below 1), at the grid's points too. Now:
+  - new units' failures are the life's CDF against when they go into
+    service, as a density linear across each cell that keeps the cell's
+    probability and mean, with the CDF integrated over each cell of
+    ages; over the first 32 cells from where they start going in, on a
+    grid 64 times finer; and from a fixed time, at their exact age;
+  - the units working at a test fail for each unit of the time they
+    have been back from it, which is exact at any time;
+  - between the grid's points the failures are a cubic through each of
+    those parts, the long-run means are that curve's means and the
+    long-run rate of failing its rate of change, where the failures were
+    lines, the means a trapezoid rule's and the rate constant across a
+    cell;
+  - the long-run values are averaged on cells that close in on where
+    new units start going into service.
+
+  Two units tested together every 8,760 h, repaired in 24 h on average
+  after a test (exponential), against the same written out as a series
+  (relative; before, now):
+
+  | Weibull life | `system_failure_frequency` | `mean_unavailability` |
+  |---|---|---|
+  | (50,000, 3) | 1.3e-10, under 1e-12 | 1.4e-10, 3.4e-12 |
+  | (50,000, 1.5) | 6.9e-8, under 1e-12 | 7.5e-10, 4.2e-12 |
+  | (50,000, 0.8) | 1.1e-6, 7.7e-11 | 3.3e-8, 9e-13 |
+  | (20,000, 0.6) | 1.1e-4, 4.8e-9 | 8.4e-7, 2.2e-11 |
+
+  One such unit's availability within its repair was 1.0e-6 off (shape
+  0.8) and 3.2e-5 (0.6), now 2e-11 and 5e-10, and its rate of failing in
+  the first cells after a test 8% and 56%, now 1e-6 and 4e-5. With
+  tests or repairs of other kinds (Weibull(50,000, 0.8); against a grid
+  eight times finer), the pair's `system_failure_frequency` was off by
+  1.3e-3 with a test of 6 h (1.1e-3 for a shape of 1.5), by 2.8e-4 with
+  a repair of a fixed 24 h, and by 1.5e-4 with a test of 6 h on average
+  and a fixed repair; now by 1.8e-8, 5e-12 and 3.4e-8. So the values of
+  diagrams with such units move by up to those sizes: about 1e-3
+  relative in a redundant system's failure frequency where a test takes
+  a fixed time, 1e-4 for a life of shape 0.6, 2e-6 in an unavailability
+  (`SafetyFunction.pfh` and `pfd_avg` among them). An exponential
+  unit's values move by about 1e-9 (its new units' failures and its
+  means are worked out the same way; against the grid eight times finer
+  it was 1.7e-9 off and is 4e-12). Seeded and simulated results do not
+  change. A tested unit's values over time take up to twice as long.
+  Left as they were: a test's time is still taken on the grid's points
+  (about 1e-8, for any life), and so is the sum of a test's and a
+  repair's times where both are spread (6e-5 in an unavailability, for
+  any life).
 - A component new at 0 (or up at any age) with an exponential life and an
   exponential (or instant) repair, and nothing else (no maintenance or
   tests, not down at 0 nor in its long-run state),
