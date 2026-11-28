@@ -499,7 +499,20 @@ minimum surpyval is in `pyproject.toml` (0.29 as of 0.20).
   it, a failure is repaired once its test is over, the tests in a repair
   are not done, and a failure a test misses waits for the next full test.
   A change to one goes into the other; `test_hidden_failures_timed.py`
-  checks the model against the simulation.
+  checks the model against the simulation. A unit's failures are one
+  curve between the grid's points as on them (`_failed_at`): its
+  long-run means are that curve's means (three Gauss points between the
+  times it bends at, `_within`) and its rate of failing is the curve's
+  rate of change, so a change to how the failures are read between the
+  points goes into all three at once. New units' failures on the grid
+  come from `_Restart.failed` alone, for the walk and the exponential
+  chain both (a density linear across each cell against the life's CDF
+  integrated over each cell of ages; exact ages from a fixed time; a
+  finer grid over the first cells from where they start), and the
+  walk's survival at the tests after stands for the same units
+  (`_Survival`'s `spread`): `test_a_weibull_unit_in_its_repair_against_its_series`
+  and its neighbours check them against a Weibull unit's series written
+  out.
 - **Replacement on condition by level's numerical model
   (`repyability/rbd/_level_replacement.py`, #271) copies the simulation's
   inspections** (`_event_loop._condition_next`): a working unit's level is

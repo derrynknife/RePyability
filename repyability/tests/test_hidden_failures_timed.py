@@ -505,3 +505,238 @@ def test_units_down_in_the_same_repairs_fail_the_system_as_over_time():
     counted = np.diff(np.ravel(rbd.expected_failures(ends)))[0]
     # (5.7e-8 apart with the entries in a cell taken midway; 6.4e-10.)
     assert counted / (4.0 * 8760.0) == pytest.approx(frequency, rel=1e-8)
+
+
+# -- any other life's failures within a cell of the grid ---------------------
+
+
+def _weibull_series(eta, beta, interval, mean_repair, s):
+    """A Weibull unit tested at once every ``interval`` and repaired in an
+    exponential time, in the long run, written out: a unit found failed
+    is back ``V`` after its test, is working at the ``k``-th test after
+    with ``E R(k T - V)`` and has run for its mean life when it fails, so
+    a cycle is ``N = 1 + sum_k E R(k T - V)`` tests long. ``s`` after a
+    test it is up with ``sum_k E R(k T + s - V) / N`` (the units back by
+    then) and failing at the rate ``sum_k E f(k T + s - V) / N``. The
+    expectations are by Gauss-Laguerre quadrature, but the units back
+    since the last test, whose ages start at 0: by adaptive quadrature,
+    with the density's power of the age as a weight."""
+    from scipy import integrate
+
+    def survival(age):
+        return np.exp(-((np.maximum(age, 0.0) / eta) ** beta))
+
+    def density(age):
+        return beta / eta * (age / eta) ** (beta - 1.0) * survival(age)
+
+    nodes, weights = np.polynomial.laguerre.laggauss(80)
+    back = mean_repair * nodes
+    k = np.arange(1, int(40.0 ** (1.0 / beta) * eta / interval) + 4)
+
+    def later(function, since):
+        ages = k[:, None] * interval + since - back[None, :]
+        return float((function(ages) @ weights).sum())
+
+    tests = 1.0 + later(survival, 0.0)
+    up, failing = [], []
+    for since in s:
+
+        def entered(age):
+            return math.exp(-(since - age) / mean_repair) / mean_repair
+
+        closing = [since * 2.0**-j for j in range(20, 0, -1)]
+        first = integrate.quad(
+            lambda age: float(survival(age)) * entered(age),
+            0.0,
+            since,
+            points=closing,
+            limit=400,
+            epsabs=0.0,
+            epsrel=1e-13,
+        )[0]
+        new = integrate.quad(
+            lambda age: beta / eta**beta * float(survival(age)) * entered(age),
+            0.0,
+            since,
+            weight="alg",
+            wvar=(beta - 1.0, 0.0),
+            limit=400,
+            epsabs=0.0,
+            epsrel=1e-13,
+        )[0]
+        up.append((first + later(survival, since)) / tests)
+        failing.append((new + later(density, since)) / tests)
+    mean_life = eta * math.gamma(1.0 + 1.0 / beta)
+    return (
+        mean_life / (tests * interval),
+        1.0 / (tests * interval),
+        np.array(up),
+        np.array(failing),
+    )
+
+
+#: A Weibull life's scale and shape, and how near its rate of failing
+#: comes within the first cells after a test (the rest is asked the same
+#: of every shape).
+WEIBULL = {
+    "shape 3": (50000.0, 3.0, 1e-9),
+    "shape 1.5": (50000.0, 1.5, 1e-7),
+    "shape 0.8": (50000.0, 0.8, 2e-5),
+    "shape 0.6": (20000.0, 0.6, 5e-4),
+}
+
+
+@pytest.mark.parametrize("name", sorted(WEIBULL))
+def test_a_weibull_unit_in_its_repair_against_its_series(name):
+    # A repair of a few cells of the grid, after which a new unit's
+    # failures rise as its age to the life's shape: not a line across a
+    # cell, for a shape below 1 least of all. (As lines across the cells,
+    # with the new units at the grid's points: the profile 1.0e-6 off for
+    # a shape of 0.8 and 3.2e-5 for 0.6, the unavailability 5.8e-8 and
+    # 9.2e-7, the rate of failing 8% and 56%.)
+    eta, beta, near = WEIBULL[name]
+    interval, mean_repair = 8760.0, 24.0
+    unit = ht.TestedUnit(
+        W([eta, beta]), E([1.0 / mean_repair]), None, interval
+    )
+    long_run, h = unit.long_run, unit.setup.h
+    assert 2.0 * h < mean_repair < 10.0 * h
+    s = np.array(
+        [0.3, 1.0, 3.3, h, 1.5 * h, 7.77, 2.0 * h, 25.0, 60.0]
+        + [16.0 * h, 16.4 * h, 32.0 * h, 33.3 * h, 200.0, 4000.0, 8000.0]
+    )
+    availability, failures, up, failing = _weibull_series(
+        eta, beta, interval, mean_repair, s
+    )
+    assert long_run.availability == pytest.approx(availability, rel=1e-10)
+    assert long_run.unavailability == pytest.approx(
+        1.0 - availability, rel=1e-9
+    )
+    assert long_run.failures == pytest.approx(failures, rel=1e-11)
+    np.testing.assert_allclose(long_run.profile(s)[0], up, atol=5e-9)
+    np.testing.assert_allclose(long_run.intensity(s), failing, rtol=near)
+
+
+@pytest.mark.parametrize("name", ["shape 1.5", "shape 0.8", "shape 0.6"])
+def test_a_pair_of_weibull_units_fails_as_their_series(name):
+    # Two units tested together: the system fails where one fails with
+    # the other down, hidden or in its repair, so its failures weigh one's
+    # rate of failing by the other's downtime, both of which bend within
+    # the first cells after a test. (As lines across the cells: 6.9e-8
+    # off for a shape of 1.5, 1.1e-6 for 0.8 and 1.1e-4 for 0.6.)
+    eta, beta, _ = WEIBULL[name]
+    interval, mean_repair = 8760.0, 24.0
+    points, shares = np.polynomial.legendre.leggauss(12)
+    edges = np.concatenate(
+        [
+            [0.0],
+            mean_repair * 2.0 ** np.arange(-30.0, 1.0),
+            mean_repair * np.arange(2, 41),
+            np.linspace(40.0 * mean_repair, interval, 41)[1:],
+        ]
+    )
+    middle, half = 0.5 * (edges[1:] + edges[:-1]), 0.5 * np.diff(edges)
+    s = (middle[:, None] + half[:, None] * points[None, :]).ravel()
+    weights = (half[:, None] * shares[None, :]).ravel()
+    _, _, up, failing = _weibull_series(eta, beta, interval, mean_repair, s)
+    frequency = 2.0 * float(weights @ (failing * (1.0 - up))) / interval
+    unavailability = float(weights @ (1.0 - up) ** 2) / interval
+    spec = hidden(W([eta, beta]), E([1.0 / mean_repair]), interval=interval)
+    rbd = RepairableRBD(
+        [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
+        {"a": spec, "b": dict(spec)},
+    )
+    bound = 2e-8 if beta < 0.7 else 1e-9
+    assert rbd.system_failure_frequency() == pytest.approx(
+        frequency, rel=bound
+    )
+    assert rbd.mean_unavailability() == pytest.approx(
+        unavailability, rel=1e-10
+    )
+
+
+@pytest.mark.parametrize("beta", [0.6, 0.8, 1.5, 3.0])
+def test_a_weibull_unit_back_at_a_fixed_time_in_closed_form(beta):
+    # Back in service a fixed time after the test that finds it failed,
+    # a unit is of an exact age at every test after: working at the k-th
+    # with R(k T - r), and so a cycle of N = 1 + sum_k R(k T - r) tests,
+    # in which it runs for its mean life. The time is not on the grid.
+    eta, interval, repair = 50000.0, 8760.0, 24.0
+    unit = ht.TestedUnit(W([eta, beta]), X([repair]), None, interval)
+    assert abs(repair / unit.setup.h - round(repair / unit.setup.h)) > 0.1
+    k = np.arange(1, int(40.0 ** (1.0 / beta) * eta / interval) + 4)
+    tests = 1.0 + float(
+        np.exp(-(((k * interval - repair) / eta) ** beta)).sum()
+    )
+    mean_life = eta * math.gamma(1.0 + 1.0 / beta)
+    long_run = unit.long_run
+    assert long_run.availability == pytest.approx(
+        mean_life / (tests * interval), rel=1e-12
+    )
+    assert long_run.failures == pytest.approx(
+        1.0 / (tests * interval), rel=1e-12
+    )
+    # s after the test, the unit back at r has failed with F(s - r).
+    s = repair + np.array([0.01, 0.5, 1.0, 3.3, 10.0, 100.0, 5000.0])
+    ages = (k[:, None] - 1) * interval + s[None, :] - repair
+    up = np.exp(-((ages / eta) ** beta)).sum(axis=0) / tests
+    np.testing.assert_allclose(long_run.profile(s)[0], up, atol=1e-13)
+    density = (
+        beta
+        / eta
+        * (ages / eta) ** (beta - 1.0)
+        * np.exp(-((ages / eta) ** beta))
+    )
+    np.testing.assert_allclose(
+        long_run.intensity(s), density.sum(axis=0) / tests, rtol=1e-10
+    )
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [
+        dict(
+            life=W([4.0, 2.0]), repair=LN([np.log(0.2), 0.6]), test=X([0.05])
+        ),
+        dict(life=W([3.0, 0.8]), repair=X([0.3]), test=E([50.0])),
+        dict(
+            life=W([3.0, 1.5]),
+            repair=X([0.4]),
+            test=E([30.0]),
+            coverage=0.5,
+            per=3,
+        ),
+    ],
+    ids=["fixed test", "spread test", "fixed repair, missing"],
+)
+def test_the_long_run_is_its_profile_s_mean(spec):
+    # The mean availability, the failures and the rate of failing are
+    # one curve's: its mean over the period, its rise over it and its
+    # rate of change, between the grid's points as on them.
+    unit = ht.TestedUnit(interval=1.0, **spec)
+    long_run = unit.long_run
+    edges = np.append(long_run.edges(), long_run.period)
+    points, shares = np.polynomial.legendre.leggauss(8)
+    middle, half = 0.5 * (edges[1:] + edges[:-1]), 0.5 * np.diff(edges)
+    phase = (middle[:, None] + half[:, None] * points[None, :]).ravel()
+    weights = (half[:, None] * shares[None, :]).ravel() / long_run.period
+    up, down = long_run.profile(phase)
+    assert float(weights @ up) == pytest.approx(
+        long_run.availability, rel=1e-10
+    )
+    assert float(weights @ down) == pytest.approx(
+        long_run.unavailability, rel=1e-9
+    )
+    assert float(weights @ long_run.intensity(phase)) == pytest.approx(
+        long_run.failures, rel=1e-9
+    )
+
+
+def test_units_working_at_a_test_are_those_not_failed_before_it():
+    # New units' failures are worked out from when each goes into
+    # service, and their survival at the tests after from masses on the
+    # age grid: the two must agree on who is left.
+    unit = ht.TestedUnit(W([50000.0, 0.8]), E([1.0 / 24.0]), None, 8760.0)
+    cycle = ht._walk(unit.setup, unit.setup.restart)
+    assert cycle.p[1] == pytest.approx(1.0 - cycle.fail[0], rel=1e-12)
+    assert cycle.fail.sum() == pytest.approx(1.0, rel=1e-12)
